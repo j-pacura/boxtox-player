@@ -4,3 +4,5 @@
 
 
 html, body, #root { height: 100%; }
+/* opcjonalnie – drobny poprawiacz wygładzania fontów */
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
