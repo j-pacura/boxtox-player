@@ -1,23 +1,19 @@
 // netlify/functions/youtube-search.js
-export async function handler(event) {
+export const handler = async (event) => {
   const YT_API_KEY = process.env.YT_API_KEY;
   const q = new URLSearchParams(event.queryStringParameters || {}).get("q") || "";
 
-  if (!YT_API_KEY) {
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ error: "Missing YT_API_KEY" }),
-    };
-  }
+  const json = (code, data) => ({
+    statusCode: code,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*", // dla frontu
+    },
+    body: JSON.stringify(data),
+  });
 
-  if (!q.trim()) {
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ items: [] }),
-    };
-  }
+  if (!YT_API_KEY) return json(500, { error: "Missing YT_API_KEY" });
+  if (!q.trim()) return json(200, { items: [] });
 
   const url = new URL("https://www.googleapis.com/youtube/v3/search");
   url.searchParams.set("part", "snippet");
@@ -28,9 +24,19 @@ export async function handler(event) {
 
   try {
     const resp = await fetch(url.toString());
-    if (!resp.ok) throw new Error("YouTube API error");
-    const data = await resp.json();
 
+    // Jeśli YT zwróci błąd (np. 400/403), zwrócimy szczegóły do debugowania:
+    if (!resp.ok) {
+      const text = await resp.text();
+      console.error("YouTube API error", resp.status, text); // zobaczysz w Netlify → Functions → Logs
+      return json(resp.status, {
+        error: "YouTube API error",
+        status: resp.status,
+        details: safeParse(text),
+      });
+    }
+
+    const data = await resp.json();
     const items = (data.items || []).map((it) => ({
       video_id: it.id?.videoId,
       title: it.snippet?.title,
@@ -40,16 +46,13 @@ export async function handler(event) {
       publishedAt: it.snippet?.publishedAt,
     }));
 
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ items }),
-    };
+    return json(200, { items });
   } catch (e) {
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ error: "Fetch failed" }),
-    };
+    console.error("Fetch failed", e);
+    return json(500, { error: "Fetch failed" });
   }
+};
+
+function safeParse(text) {
+  try { return JSON.parse(text); } catch { return { raw: text }; }
 }
