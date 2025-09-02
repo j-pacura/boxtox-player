@@ -147,7 +147,10 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
           tag.src = 'https://www.youtube.com/iframe_api';
           document.body.appendChild(tag);
         }
-        const check = () => { if (window.YT && window.YT.Player) resolve(window.YT); else setTimeout(check, 50); };
+        const check = () => {
+          if (window.YT && window.YT.Player) resolve(window.YT);
+          else setTimeout(check, 50);
+        };
         check();
       });
     }
@@ -160,28 +163,62 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     if (!apiReady || !containerRef.current || playerRef.current) return;
     try {
       playerRef.current = new window.YT.Player(containerRef.current, {
-        width: '100%', height: '100%',
-        playerVars: { rel: 0, modestbranding: 1, playsinline: 1, origin: window.location.origin },
+        width: '100%',
+        height: '100%',
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          autoplay: 1,                    // ⟵ ważne
+          origin: window.location.origin
+        },
         events: {
           onReady: (e) => {
-            if (videoId && userInteracted) { try { e.target.loadVideoById(videoId); e.target.playVideo(); } catch {} }
-            else if (videoId) { try { e.target.cueVideoById(videoId); } catch {} }
+            // Jeśli mamy video i było kliknięcie, startuj od razu
+            if (videoId && userInteracted) {
+              try { e.target.loadVideoById(videoId); e.target.playVideo(); } catch {}
+            } else if (videoId) {
+              try { e.target.cueVideoById(videoId); } catch {}
+            }
           },
           onStateChange: (e) => {
             if (!window.YT) return;
-            if (e?.data === window.YT.PlayerState.ENDED) {
-              const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
+            const S = window.YT.PlayerState;
+            // Gdy wpadnie w CUED, wymuś start po kolejce
+            if (e?.data === S.CUED && userInteracted) {
+              try { e.target.playVideo(); } catch {}
             }
-            if (e?.data === window.YT.PlayerState.PAUSED) {
+            // Normalny END
+            if (e?.data === S.ENDED) {
+              const now = Date.now();
+              if (now - lastEndedRef.current > 1200) {
+                lastEndedRef.current = now;
+                onEnded && onEnded();
+              }
+            }
+            // Niektóre przeglądarki zatrzymują się na PAUSED przy ~końcu
+            if (e?.data === S.PAUSED || e?.data === S.BUFFERING || e?.data === S.UNSTARTED) {
               try {
-                const p = playerRef.current; const dur = p.getDuration?.(); const cur = p.getCurrentTime?.();
-                if (dur > 0 && cur >= dur - 0.2) {
-                  const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
+                const p = playerRef.current;
+                const dur = p.getDuration?.();
+                const cur = p.getCurrentTime?.();
+                if (dur > 0 && cur >= dur - 1.5) {     // ⟵ większy margines
+                  const now = Date.now();
+                  if (now - lastEndedRef.current > 1200) {
+                    lastEndedRef.current = now;
+                    onEnded && onEnded();
+                  }
                 }
               } catch {}
             }
           },
-          onError: () => { const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); } }
+          onError: () => {
+            const now = Date.now();
+            if (now - lastEndedRef.current > 1200) {
+              lastEndedRef.current = now;
+              onEnded && onEnded();
+            }
+          }
         },
       });
     } catch {}
@@ -189,20 +226,34 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
 
   // Zmiana videoId / userInteracted
   useEffect(() => {
-    const p = playerRef.current; if (!apiReady || !p || !videoId) return;
-    try { if (userInteracted) { p.loadVideoById(videoId); p.playVideo(); } else { p.cueVideoById(videoId); } } catch {}
+    const p = playerRef.current;
+    if (!apiReady || !p || !videoId) return;
+    try {
+      if (userInteracted) {
+        p.loadVideoById(videoId);
+        // „dobij” play po krótkim czasie — kiedy player bywa jeszcze w trakcie CUED
+        setTimeout(() => { try { p.playVideo(); } catch {} }, 120);
+      } else {
+        p.cueVideoById(videoId);
+      }
+    } catch {}
   }, [apiReady, videoId, userInteracted]);
 
-  // Fallback blisko końca
+  // Fallback blisko końca – cyklicznie
   useEffect(() => {
     const p = playerRef.current; if (!p) return;
     const iv = setInterval(() => {
       try {
+        const S = window.YT?.PlayerState;
         const state = p.getPlayerState?.();
         const dur = p.getDuration?.();
         const cur = p.getCurrentTime?.();
-        if (dur > 0 && cur >= dur - 0.25 && (state === window.YT.PlayerState.PLAYING || state === window.YT.PlayerState.PAUSED)) {
-          const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
+        if (dur > 0 && cur >= dur - 1.5 && (state === S.PLAYING || state === S.PAUSED || state === S.BUFFERING)) {
+          const now = Date.now();
+          if (now - lastEndedRef.current > 1200) {
+            lastEndedRef.current = now;
+            onEnded && onEnded();
+          }
         }
       } catch {}
     }, 800);
@@ -219,13 +270,20 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
       <div ref={containerRef} className="w-full h-full" />
       {!userInteracted && videoId && (
-        <button onClick={playAfterUserGesture} className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30" title="Kliknij, aby odtworzyć">
-          <span className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">Kliknij, aby odtworzyć</span>
+        <button
+          onClick={playAfterUserGesture}
+          className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30"
+          title="Kliknij, aby odtworzyć"
+        >
+          <span className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">
+            Kliknij, aby odtworzyć
+          </span>
         </button>
       )}
     </div>
   );
 }
+
 
 function SkeletonCard(){
   return (
