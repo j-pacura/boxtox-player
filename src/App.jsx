@@ -1,21 +1,19 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X } from "lucide-react";
+import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X, SkipBack, SkipForward, Zap } from "lucide-react";
 
-// BOXTOX PLAYER — Public Auth + Add-to-Playlist from search + Delete playlist/items + Favorite toggle + z-index fix
-// - Rejestracja/logowanie: każdy użytkownik (Supabase Email/Password)
-// - Goście: LocalStorage
-// - Wyszukiwanie YT: Netlify Function /.netlify/functions/youtube-search (klucz na serwerze)
-// - NOWE:
-//   • Toggle Ulubione (dodaj/usuń) + przycisk usuwania w sekcji Ulubione
-//   • "Dodaj do playlisty" w wynikach: poprawione nakładanie (z-index) + brak przycinania — usunięto overflow z karty
-//   • Usuwanie elementów i całych playlist (z potwierdzeniem)
-//   • Mobile playlist view: lista bez miniaturek; desktop: karty
-// - EQ/Bass Boost: patrz komentarz w pliku (YouTube iFrame nie pozwala na WebAudio — można dodać dla lokalnych plików w osobnym module)
+// BOXTOX PLAYER — Play Favorites/Playlist + Auto-advance (YouTube IFrame API)
+// - Dodano kolejkę odtwarzania: "Odtwórz ulubione" oraz "Odtwórz playlistę" (auto‑next)
+// - Nawigacja przy playerze: Poprzedni / Następny / Auto‑następny (toggle)
+// - Klik na wynik/ulubione/element playlisty nie uruchamia automatycznej kolejki (tryb ręczny),
+//   ale jeśli element należy do aktywnej kolejki – zsynchronizuje indeks.
+// - "Dodaj do playlisty" (dropdown) z poprawnym z-index (zawsze na wierzchu)
+// - Ulubione: toggle + usuwanie z listy
+// - Mobile playlist view: lista bez miniaturek; desktop: karty
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-const LS_GUEST_KEY = "boxtox.guest.publicauth.v3";
+const LS_GUEST_KEY = "boxtox.guest.publicauth.v4";
 
 function useSupabase() {
   const enabled = !!(SUPABASE_URL && SUPABASE_ANON);
@@ -88,13 +86,11 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <div className={`relative rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive?"ring-2 ring-red-600/60":""}`} onClick={()=>onClick(video)}>
-      {/* Remove from playlist (desktop) */}
       {playlistIdContext && onRemoveFromPlaylist && (
         <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40">
           <X size={14} />
         </button>
       )}
-      {/* Thumbnail wrapper keeps rounding & clipping */}
       <div className="relative group overflow-hidden rounded-t-lg">
         <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover"/>
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors grid place-items-center">
@@ -141,15 +137,74 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
   );
 }
 
-function Player({ videoId }) {
-  if (!videoId) return (
-    <div className="w-full aspect-video grid place-items-center border border-dashed border-gray-700 rounded-xl bg-gray-900">
-      <div className="flex flex-col items-center gap-2 text-gray-400"><Film size={48}/><div>Wybierz film, aby odtworzyć</div></div>
-    </div>
-  );
+function Player({ videoId, onEnded }) {
+  const containerRef = useRef(null);
+  const playerRef = useRef(null);
+  const [apiReady, setApiReady] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    function ensureYT() {
+      return new Promise((resolve) => {
+        if (window.YT && window.YT.Player) return resolve(window.YT);
+        const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+        if (!existing) {
+          const tag = document.createElement('script');
+          tag.src = 'https://www.youtube.com/iframe_api';
+          document.body.appendChild(tag);
+        }
+        const check = () => {
+          if (window.YT && window.YT.Player) resolve(window.YT); else setTimeout(check, 50);
+        };
+        check();
+      });
+    }
+    (async () => {
+      await ensureYT();
+      if (!mounted) return;
+      setApiReady(true);
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!apiReady || !containerRef.current) return;
+    // Destroy previous instance
+    if (playerRef.current) { try { playerRef.current.destroy(); } catch {} playerRef.current = null; }
+
+    try {
+      playerRef.current = new window.YT.Player(containerRef.current, {
+        width: '100%',
+        height: '100%',
+        videoId: videoId || undefined,
+        playerVars: {
+          autoplay: 1,
+          rel: 0,
+          modestbranding: 1,
+          origin: window.location.origin,
+        },
+        events: {
+          onReady: (e) => {
+            if (videoId) e.target.playVideo();
+          },
+          onStateChange: (e) => {
+            // 0 = ENDED
+            if (e?.data === window.YT.PlayerState.ENDED) {
+              onEnded && onEnded();
+            }
+          },
+        },
+      });
+    } catch (e) {
+      // Silent fallback: leave empty area
+    }
+    // cleanup on unmount handled above when re-creating
+  }, [apiReady, videoId]);
+
   return (
     <div className="w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
-      <iframe className="w-full h-full" src={`https://www.youtube.com/embed/${videoId}?autoplay=1`} title="YouTube video player" frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen/>
+      {/* Container for YT player */}
+      <div ref={containerRef} className="w-full h-full" />
     </div>
   );
 }
@@ -181,6 +236,12 @@ export default function App(){
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(null);
   const [playlistItems, setPlaylistItems] = useState([]);
 
+  // Queue state
+  const [queue, setQueue] = useState([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [autoNext, setAutoNext] = useState(true);
+  const [queueLabel, setQueueLabel] = useState("");
+
   const isCloud = !!(supabase && user);
 
   useEffect(()=>{
@@ -206,7 +267,7 @@ export default function App(){
       if(!res.ok) throw new Error("YouTube search failed");
       const data = await res.json();
       const items = (data.items||[]).filter(v=>v.video_id);
-      setResults(items); if(items.length) setActive(items[0]); setActiveTab("browse");
+      setResults(items); if(items.length) { setActive(items[0]); clearQueue(); } setActiveTab("browse");
     }catch(e){ console.error(e); alert("Błąd wyszukiwania. Skontaktuj się z administratorem."); }
     finally{ setLoading(false); }
   }
@@ -284,11 +345,11 @@ export default function App(){
       const { error } = await supabase.from("playlists").delete().eq("id", playlistId);
       if(error) return alert("Nie udało się usunąć playlisty (Supabase).");
       setPlaylists(p=>p.filter(pl=>pl.id!==playlistId));
-      if(selectedPlaylistId===playlistId){ setSelectedPlaylistId(null); setPlaylistItems([]); }
+      if(selectedPlaylistId===playlistId){ setSelectedPlaylistId(null); setPlaylistItems([]); clearQueue(); }
     } else {
       setGuestStore(prev=>{ const pls = prev.playlists.filter(p=>p.id!==playlistId); return { ...prev, playlists: pls }; });
       setPlaylists(p=>p.filter(pl=>pl.id!==playlistId));
-      if(selectedPlaylistId===playlistId){ setSelectedPlaylistId(null); setPlaylistItems([]); }
+      if(selectedPlaylistId===playlistId){ setSelectedPlaylistId(null); setPlaylistItems([]); clearQueue(); }
     }
   }
 
@@ -303,13 +364,23 @@ export default function App(){
     }
   }
 
-  async function signOut(){ if(supabase) await supabase.auth.signOut(); }
+  function clearQueue(){ setQueue([]); setQueueIndex(0); setQueueLabel(""); }
+  function startQueue(items, label){ if(!items||items.length===0) return; setQueue(items); setQueueIndex(0); setQueueLabel(label||""); setActive(items[0]); }
+  function nextInQueue(){ if(queue.length===0) return; const i = Math.min(queueIndex+1, queue.length-1); setQueueIndex(i); setActive(queue[i]); }
+  function prevInQueue(){ if(queue.length===0) return; const i = Math.max(queueIndex-1, 0); setQueueIndex(i); setActive(queue[i]); }
+  function onEnded(){ if(autoNext && queue.length>0 && queueIndex < queue.length-1){ nextInQueue(); } }
+
+  function handleSelect(video){
+    // klik ręczny: ustaw aktywny; jeśli element jest w kolejce – zsynchronizuj indeks; jeśli nie – nie zmieniaj kolejki
+    setActive(video);
+    if(queue.length>0){ const idx = queue.findIndex(v=>v.video_id===video.video_id); if(idx>=0) setQueueIndex(idx); }
+  }
 
   const favoriteIds = new Set(favorites.map(f=>f.video_id));
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      <Header query={query} setQuery={setQuery} onSearch={search} onOpenAccount={()=>setShowAccount(true)} userEmail={user?.email} onSignOut={signOut} activeTab={activeTab} setActiveTab={setActiveTab}/>
+      <Header query={query} setQuery={setQuery} onSearch={search} onOpenAccount={()=>setShowAccount(true)} userEmail={user?.email} onSignOut={async()=>{ await (supabase?.auth.signOut()); }} activeTab={activeTab} setActiveTab={setActiveTab}/>
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-12 gap-6">
         {/* Sidebar */}
@@ -336,14 +407,17 @@ export default function App(){
           </section>
 
           <section className="rounded-lg border border-gray-700 bg-gray-900 p-4">
-            <div className="flex items-center justify-between"><h2 className="font-bold text-xl">Ulubione</h2></div>
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-xl">Ulubione</h2>
+              <button onClick={()=> startQueue(favorites, "Ulubione") } className="text-sm px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><Play size={14}/> Odtwórz</button>
+            </div>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-80 overflow-auto pr-1">
               {favorites.length===0 ? (
                 <div className="text-sm text-gray-400 flex items-center gap-2"><Heart size={16}/> Brak ulubionych.</div>
               ) : (
                 favorites.map(v=> (
                   <div key={v.video_id} className="flex gap-3 items-center">
-                    <button className="flex-1 flex items-center gap-3 text-left" onClick={()=>setActive(v)}>
+                    <button className="flex-1 flex items-center gap-3 text-left" onClick={()=>handleSelect(v)}>
                       <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700 hidden md:block"/>
                       <div className="text-sm text-white/90 line-clamp-2">{v.title}</div>
                     </button>
@@ -357,11 +431,27 @@ export default function App(){
 
         {/* Right: player + results */}
         <section className="col-span-12 lg:col-span-8 flex flex-col gap-4">
-          <Player videoId={active?.video_id}/>
+          {/* Player + transport controls */}
+          <div className="space-y-3">
+            <Player videoId={active?.video_id} onEnded={onEnded}/>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button onClick={prevInQueue} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><SkipBack size={16}/> Poprzedni</button>
+                <button onClick={nextInQueue} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2">Następny <SkipForward size={16}/></button>
+                <button onClick={()=>setAutoNext(v=>!v)} className={`px-3 py-2 rounded-lg border ${autoNext?"bg-red-600 border-transparent":"bg-gray-800 border-gray-700 hover:bg-gray-700"} inline-flex items-center gap-2`}>
+                  <Zap size={16}/> Auto‑następny: {autoNext?"ON":"OFF"}
+                </button>
+              </div>
+              <div className="text-sm text-gray-400">{queueLabel && queue.length>0 ? `Tryb: ${queueLabel} (${queueIndex+1}/${queue.length})` : "Tryb: ręczny"}</div>
+            </div>
+          </div>
 
           {selectedPlaylistId && (
             <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
-              <div className="font-bold text-xl mb-2">Elementy playlisty</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="font-bold text-xl">Elementy playlisty</div>
+                <button onClick={()=> startQueue(playlistItems, "Playlista") } className="text-sm px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><Play size={14}/> Odtwórz playlistę</button>
+              </div>
 
               {/* Mobile: prosta lista bez miniaturek */}
               <div className="md:hidden divide-y divide-gray-800 border border-gray-800 rounded-lg overflow-hidden">
@@ -370,7 +460,7 @@ export default function App(){
                 ) : (
                   playlistItems.map((v)=> (
                     <div key={v.video_id} className={`w-full flex items-center justify-between px-4 py-3 ${active?.video_id===v.video_id?"bg-gray-800":"bg-gray-900"}`}>
-                      <button onClick={()=>setActive(v)} className="text-left">
+                      <button onClick={()=>handleSelect(v)} className="text-left">
                         <div className="font-medium text-white line-clamp-2">{v.title}</div>
                         <div className="text-xs text-gray-400">{v.channel_title}</div>
                       </button>
@@ -386,7 +476,7 @@ export default function App(){
                   <div className="text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16}/> Ta playlista jest pusta.</div>
                 ) : (
                   playlistItems.map((v)=> (
-                    <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlistIdContext={selectedPlaylistId} onRemoveFromPlaylist={removeFromPlaylist}/>
+                    <VideoCard key={v.video_id} video={v} onClick={handleSelect} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlistIdContext={selectedPlaylistId} onRemoveFromPlaylist={removeFromPlaylist}/>
                   ))
                 )}
               </div>
@@ -400,7 +490,7 @@ export default function App(){
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {results.map((v)=> (
-                  <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
+                  <VideoCard key={v.video_id} video={v} onClick={handleSelect} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
                 ))}
                 {results.length===0 && (
                   <div className="w-full py-10 grid place-items-center text-gray-400">
@@ -436,17 +526,6 @@ export default function App(){
           </div>
         </div>
       )}
-
-      {/*
-      ======================================
-      O EQ / Bass Boost:
-      ======================================
-      Dźwięk z YouTube odtwarzany przez <iframe> nie jest dostępny dla WebAudio API (CORS / sandbox),
-      więc w przeglądarce nie można legalnie i technicznie nakładać filtrów (EQ, bass boost) na audio z YT.
-      Możemy dodać EQ/BassBoost dla lokalnych plików audio (np. mp3) odtwarzanych przez <audio> z crossOrigin="anonymous"
-      lub przez własny hosting (np. Supabase Storage) — wtedy łańcuch: MediaElementAudioSourceNode -> BiquadFilterNode (peaking/low-shelf) -> GainNode.
-      Jeśli chcesz, przygotuję moduł "Local Tracks" z uploadem do Supabase Storage + prostym 5‑pasmowym EQ i Bass Boost.
-      */}
     </div>
   );
 }
