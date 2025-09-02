@@ -1,19 +1,17 @@
+// FILE: src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X, SkipBack, SkipForward, Zap } from "lucide-react";
 
-// BOXTOX PLAYER — Play Favorites/Playlist + Auto-advance (YouTube IFrame API)
-// - Dodano kolejkę odtwarzania: "Odtwórz ulubione" oraz "Odtwórz playlistę" (auto‑next)
-// - Nawigacja przy playerze: Poprzedni / Następny / Auto‑następny (toggle)
-// - Klik na wynik/ulubione/element playlisty nie uruchamia automatycznej kolejki (tryb ręczny),
-//   ale jeśli element należy do aktywnej kolejki – zsynchronizuje indeks.
-// - "Dodaj do playlisty" (dropdown) z poprawnym z-index (zawsze na wierzchu)
-// - Ulubione: toggle + usuwanie z listy
-// - Mobile playlist view: lista bez miniaturek; desktop: karty
+// BOXTOX PLAYER — Auto‑next fix + "Pokaż więcej" wyników (paginacja)
+// - IFrame API: naprawiony autoplay + fallback detector końca utworu
+// - Kolejka: Odtwórz ulubione / Odtwórz playlistę, Auto‑następny, Poprzedni/Następny
+// - Wyniki: przycisk „Pokaż więcej wyników” (korzysta z pageToken z Netlify Function)
+// - Dropdown „Dodaj do playlisty”: zawsze nad kartą (z‑index), brak przycinania
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-const LS_GUEST_KEY = "boxtox.guest.publicauth.v4";
+const LS_GUEST_KEY = "boxtox.guest.publicauth.v5";
 
 function useSupabase() {
   const enabled = !!(SUPABASE_URL && SUPABASE_ANON);
@@ -67,7 +65,7 @@ function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut
           <button onClick={onSearch} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-gray-800 hover:bg-gray-700 border border-gray-700"><Search size={20} className="text-gray-300"/></button>
         </div>
         <div className="flex-1" />
-        <div className="flex items-center gap-2">
+        <div className="flex items centerpiece gap-2">
           {userEmail ? (
             <>
               <div className="hidden lg:block text-sm text-gray-300">{userEmail}</div>
@@ -82,124 +80,61 @@ function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut
   );
 }
 
-function VideoCard({
-  video,
-  onClick,
-  isActive,
-  onFavToggle,
-  isFavorite,
-  playlists,
-  onCreatePlaylist,
-  onAddToPlaylist,
-  playlistIdContext,
-  onRemoveFromPlaylist,
-}) {
-  const [menuOpen, setMenuOpen] = React.useState(false);
-
+function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlists, onCreatePlaylist, onAddToPlaylist, playlistIdContext, onRemoveFromPlaylist }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
-    // FIX #1: DAJEMY `relative` + gdy menu otwarte, podbijamy warstwę `z-20`.
-    //         NIE używamy tutaj `overflow-hidden` (to by ucinało dropdown).
-    <div
-      className={`relative ${menuOpen ? "z-20" : ""} rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive ? "ring-2 ring-red-600/60" : ""}`}
-      onClick={() => onClick(video)}
-    >
-      {/* przycisk X dla trybu "element w playliście" */}
+    <div className={`relative ${menuOpen?"z-20":""} rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive?"ring-2 ring-red-600/60":""}`} onClick={()=>onClick(video)}>
       {playlistIdContext && onRemoveFromPlaylist && (
-        <button
-          title="Usuń z playlisty"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemoveFromPlaylist(playlistIdContext, video.video_id);
-          }}
-          className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40"
-        >
-          <X size={14} />
-        </button>
+        <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40"><X size={14} /></button>
       )}
-
-      {/* FIX #2: `overflow-hidden` tylko na WRAPPERZE MINIATURY, żeby zachować zaokrąglenia,
-                 ale nie ucinać dropdownu poniżej */}
+      {/* overflow-hidden tylko na miniaturze */}
       <div className="relative group overflow-hidden rounded-t-lg">
-        <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover" />
+        <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover"/>
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors grid place-items-center">
-          <div className="w-16 h-16 rounded-full bg-white/90 grid place-items-center shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
-            <Play className="text-gray-900" size={28} />
-          </div>
+          <div className="w-16 h-16 rounded-full bg-white/90 grid place-items-center shadow-md opacity-0 group-hover:opacity-100 transition-opacity"><Play className="text-gray-900" size={28}/></div>
         </div>
       </div>
-
       <div className="p-4">
         <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
         <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
-
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            onClick={(e) => { e.stopPropagation(); onFavToggle(video, isFavorite); }}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
-          >
-            <Heart size={16} className={isFavorite ? "text-red-500 fill-red-500" : "text-gray-400"} />
-            {isFavorite ? "Usuń z ulubionych" : "Ulubione"}
+        <div className="mt-3 flex items-center gap-2 relative">
+          <button onClick={(e)=>{ e.stopPropagation(); onFavToggle(video, isFavorite); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
+            <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"Usuń z ulubionych":"Ulubione"}
           </button>
-
-          {/* FIX #3: dropdown ma własny stacking: `z-[100]`, a rodzic sekcji ma `relative`.
-                     Dodatkowo `onClick={(e)=>e.stopPropagation()}` – klik w menu nie zamknie karty. */}
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => setMenuOpen((o) => !o)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
-            >
-              Dodaj do playlisty <ChevronDown size={16} className="opacity-80" />
-            </button>
-
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-[100]">
-                <button
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg"
-                  onClick={async () => {
-                    const name = prompt("Nazwa nowej playlisty");
-                    if (name) {
-                      const id = await onCreatePlaylist(name);
-                      if (id) { await onAddToPlaylist(id, video); setMenuOpen(false); }
-                    }
-                  }}
-                >
-                  <Plus size={16} /> Nowa playlista
-                </button>
-
-                <div className="max-h-56 overflow-auto py-1">
-                  {!playlists || playlists.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
-                  ) : (
-                    playlists.map((pl) => (
-                      <button
-                        key={pl.id}
-                        className="w-full text-left px-3 py-2 hover:bg-gray-800"
-                        onClick={async () => { await onAddToPlaylist(pl.id, video); setMenuOpen(false); }}
-                      >
-                        {pl.name}
-                      </button>
-                    ))
-                  )}
+          {onAddToPlaylist && (
+            <div className="relative" onClick={(e)=>e.stopPropagation()}>
+              <button onClick={()=>setMenuOpen((o)=>!o)} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">Dodaj do playlisty <ChevronDown size={16} className="opacity-80"/></button>
+              {menuOpen && (
+                <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-[100]">
+                  <button className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg" onClick={async()=>{ const name = prompt("Nazwa nowej playlisty"); if(name){ const id = await onCreatePlaylist(name); if(id){ await onAddToPlaylist(id, video); setMenuOpen(false);} } }}><Plus size={16}/> Nowa playlista</button>
+                  <div className="max-h-56 overflow-auto py-1">
+                    {(!playlists||playlists.length===0) ? (
+                      <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
+                    ) : (
+                      playlists.map(pl => (
+                        <button key={pl.id} className="w-full text-left px-3 py-2 hover:bg-gray-800" onClick={async()=>{ await onAddToPlaylist(pl.id, video); setMenuOpen(false); }}>{pl.name}</button>
+                      ))
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// --- Player.jsx (wewnątrz App.jsx) ---
 function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
-  const containerRef = React.useRef(null);
-  const playerRef = React.useRef(null);
-  const [apiReady, setApiReady] = React.useState(false);
+  const containerRef = useRef(null);
+  const playerRef = useRef(null);
+  const [apiReady, setApiReady] = useState(false);
+  const lastEndedRef = useRef(0);
 
-  // 1) Załaduj YouTube IFrame API raz
-  React.useEffect(() => {
+  // Załaduj IFrame API
+  useEffect(() => {
     let mounted = true;
-
     function ensureYT() {
       return new Promise((resolve) => {
         if (window.YT && window.YT.Player) return resolve(window.YT);
@@ -209,74 +144,69 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
           tag.src = 'https://www.youtube.com/iframe_api';
           document.body.appendChild(tag);
         }
-        const check = () => {
-          if (window.YT && window.YT.Player) resolve(window.YT);
-          else setTimeout(check, 50);
-        };
+        const check = () => { if (window.YT && window.YT.Player) resolve(window.YT); else setTimeout(check, 50); };
         check();
       });
     }
-
-    (async () => {
-      await ensureYT();
-      if (!mounted) return;
-      setApiReady(true);
-    })();
-
+    (async () => { await ensureYT(); if (!mounted) return; setApiReady(true); })();
     return () => { mounted = false; };
   }, []);
 
-  // 2) Utwórz player tylko raz, gdy API gotowe
-  React.useEffect(() => {
+  // Tworzenie playera raz
+  useEffect(() => {
     if (!apiReady || !containerRef.current || playerRef.current) return;
-
     try {
       playerRef.current = new window.YT.Player(containerRef.current, {
         width: '100%',
         height: '100%',
-        playerVars: {
-          rel: 0,
-          modestbranding: 1,
-          // autoplay sterujemy niżej, w zależności od userInteracted
-          playsinline: 1,
-          origin: window.location.origin,
-        },
+        playerVars: { rel: 0, modestbranding: 1, playsinline: 1, origin: window.location.origin },
         events: {
           onReady: (e) => {
-            // jeśli od razu mamy videoId i użytkownik kliknął wcześniej, odtwarzamy
-            if (videoId && userInteracted) {
-              try { e.target.loadVideoById(videoId); e.target.playVideo(); } catch {}
-            } else if (videoId) {
-              try { e.target.cueVideoById(videoId); } catch {}
-            }
+            if (videoId && userInteracted) { try { e.target.loadVideoById(videoId); e.target.playVideo(); } catch {} }
+            else if (videoId) { try { e.target.cueVideoById(videoId); } catch {} }
           },
           onStateChange: (e) => {
             if (e?.data === window.YT.PlayerState.ENDED) {
-              onEnded && onEnded();
+              const now = Date.now();
+              if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
             }
           },
+          onError: (_e) => {
+            // w razie błędu – spróbuj przejść dalej
+            const now = Date.now();
+            if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
+          }
         },
       });
     } catch {}
-  }, [apiReady, videoId, userInteracted, onEnded]);
+  }, [apiReady]);
 
-  // 3) Reaguj na zmianę videoId / userInteracted
-  React.useEffect(() => {
-    const p = playerRef.current;
-    if (!apiReady || !p || !videoId) return;
-
+  // Reakcja na zmianę videoId / userInteracted
+  useEffect(() => {
+    const p = playerRef.current; if (!apiReady || !p || !videoId) return;
     try {
-      if (userInteracted) {
-        p.loadVideoById(videoId);
-        p.playVideo();
-      } else {
-        // bez gestu użytkownika nie próbujemy autoplay – cue + overlay
-        p.cueVideoById(videoId);
-      }
+      if (userInteracted) { p.loadVideoById(videoId); p.playVideo(); }
+      else { p.cueVideoById(videoId); }
     } catch {}
   }, [apiReady, videoId, userInteracted]);
 
-  // 4) Overlay „Kliknij, aby odtworzyć” – gdy brakuje gestu
+  // Fallback: polling blisko końca (gdyby onStateChange nie strzelił)
+  useEffect(() => {
+    const p = playerRef.current; if (!p) return;
+    const iv = setInterval(() => {
+      try {
+        const state = p.getPlayerState?.();
+        const dur = p.getDuration?.();
+        const cur = p.getCurrentTime?.();
+        if (state === window.YT.PlayerState.PLAYING && dur > 0 && cur >= dur - 0.5) {
+          const now = Date.now();
+          if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
+        }
+      } catch {}
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [apiReady, onEnded]);
+
   function playAfterUserGesture() {
     const p = playerRef.current;
     onRequireInteract && onRequireInteract();
@@ -287,20 +217,13 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
       <div ref={containerRef} className="w-full h-full" />
       {!userInteracted && videoId && (
-        <button
-          onClick={playAfterUserGesture}
-          className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30"
-          title="Kliknij, aby odtworzyć"
-        >
-          <span className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">
-            Kliknij, aby odtworzyć
-          </span>
+        <button onClick={playAfterUserGesture} className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30" title="Kliknij, aby odtworzyć">
+          <span className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">Kliknij, aby odtworzyć</span>
         </button>
       )}
     </div>
   );
 }
-
 
 function SkeletonCard(){
   return (
@@ -319,8 +242,7 @@ export default function App(){
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(null);
-  // <-- NOWA linia: gest użytkownika (wymagany do autoplay)
-  const [userInteracted, setUserInteracted] = useState(false);
+
   const [showAccount, setShowAccount] = useState(false);
   const [authView, setAuthView] = useState("signin");
   const [activeTab, setActiveTab] = useState("browse");
@@ -335,6 +257,11 @@ export default function App(){
   const [queueIndex, setQueueIndex] = useState(0);
   const [autoNext, setAutoNext] = useState(true);
   const [queueLabel, setQueueLabel] = useState("");
+  const [userInteracted, setUserInteracted] = useState(false);
+
+  // Pagination for results
+  const [nextToken, setNextToken] = useState(null);
+  const [lastQuery, setLastQuery] = useState("");
 
   const isCloud = !!(supabase && user);
 
@@ -361,8 +288,27 @@ export default function App(){
       if(!res.ok) throw new Error("YouTube search failed");
       const data = await res.json();
       const items = (data.items||[]).filter(v=>v.video_id);
-      setResults(items); if(items.length) { setActive(items[0]); clearQueue(); } setActiveTab("browse");
+      setResults(items);
+      setNextToken(data.nextPageToken||null);
+      setLastQuery(query);
+      if(items.length) { setActive(items[0]); clearQueue(); }
+      setActiveTab("browse");
     }catch(e){ console.error(e); alert("Błąd wyszukiwania. Skontaktuj się z administratorem."); }
+    finally{ setLoading(false); }
+  }
+
+  async function loadMore(){
+    if(!nextToken || !lastQuery) return;
+    setLoading(true);
+    try{
+      const url = `/.netlify/functions/youtube-search?q=${encodeURIComponent(lastQuery)}&pageToken=${encodeURIComponent(nextToken)}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error("YouTube search failed");
+      const data = await res.json();
+      const items = (data.items||[]).filter(v=>v.video_id);
+      setResults(prev => [...prev, ...items]);
+      setNextToken(data.nextPageToken||null);
+    } catch(e){ console.error(e); alert("Nie udało się pobrać kolejnych wyników."); }
     finally{ setLoading(false); }
   }
 
@@ -459,26 +405,12 @@ export default function App(){
   }
 
   function clearQueue(){ setQueue([]); setQueueIndex(0); setQueueLabel(""); }
-  function startQueue(items, label) {
-  if (!items || items.length === 0) return;
-  setUserInteracted(true);                 // <--- DODANE
-  setQueue(items);
-  setQueueIndex(0);
-  setQueueLabel(label || "");
-  setActive(items[0]);
-}
+  function startQueue(items, label){ if(!items||items.length===0) return; setUserInteracted(true); setQueue(items); setQueueIndex(0); setQueueLabel(label||""); setActive(items[0]); }
   function nextInQueue(){ if(queue.length===0) return; const i = Math.min(queueIndex+1, queue.length-1); setQueueIndex(i); setActive(queue[i]); }
   function prevInQueue(){ if(queue.length===0) return; const i = Math.max(queueIndex-1, 0); setQueueIndex(i); setActive(queue[i]); }
   function onEnded(){ if(autoNext && queue.length>0 && queueIndex < queue.length-1){ nextInQueue(); } }
 
-  function handleSelect(video) {
-  setUserInteracted(true);                 // <--- DODANE
-  setActive(video);
-  if (queue.length > 0) {
-    const idx = queue.findIndex(v => v.video_id === video.video_id);
-    if (idx >= 0) setQueueIndex(idx);
-  }
-}
+  function handleSelect(video){ setUserInteracted(true); setActive(video); if(queue.length>0){ const idx = queue.findIndex(v=>v.video_id===video.video_id); if(idx>=0) setQueueIndex(idx); }}
 
   const favoriteIds = new Set(favorites.map(f=>f.video_id));
 
@@ -535,21 +467,13 @@ export default function App(){
 
         {/* Right: player + results */}
         <section className="col-span-12 lg:col-span-8 flex flex-col gap-4">
-          {/* Player + transport controls */}
           <div className="space-y-3">
-            <Player
-              videoId={active?.video_id}
-              onEnded={onEnded}
-              userInteracted={userInteracted}
-              onRequireInteract={() => setUserInteracted(true)}
-            />
+            <Player videoId={active?.video_id} onEnded={onEnded} userInteracted={userInteracted} onRequireInteract={()=>setUserInteracted(true)} />
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <button onClick={prevInQueue} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><SkipBack size={16}/> Poprzedni</button>
                 <button onClick={nextInQueue} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2">Następny <SkipForward size={16}/></button>
-                <button onClick={()=>setAutoNext(v=>!v)} className={`px-3 py-2 rounded-lg border ${autoNext?"bg-red-600 border-transparent":"bg-gray-800 border-gray-700 hover:bg-gray-700"} inline-flex items-center gap-2`}>
-                  <Zap size={16}/> Auto‑następny: {autoNext?"ON":"OFF"}
-                </button>
+                <button onClick={()=>setAutoNext(v=>!v)} className={`px-3 py-2 rounded-lg border ${autoNext?"bg-red-600 border-transparent":"bg-gray-800 border-gray-700 hover:bg-gray-700"} inline-flex items-center gap-2`}><Zap size={16}/> Auto‑następny: {autoNext?"ON":"OFF"}</button>
               </div>
               <div className="text-sm text-gray-400">{queueLabel && queue.length>0 ? `Tryb: ${queueLabel} (${queueIndex+1}/${queue.length})` : "Tryb: ręczny"}</div>
             </div>
@@ -594,19 +518,21 @@ export default function App(){
 
           <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <div className="flex items-center justify-between mb-3"><div className="font-bold text-xl">Wyniki wyszukiwania</div>{loading && <div className="text-sm text-gray-400">Szukam...</div>}</div>
-            {loading ? (
+            {loading && results.length===0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{Array.from({length:6}).map((_,i)=><SkeletonCard key={i}/>)}</div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {results.map((v)=> (
-                  <VideoCard key={v.video_id} video={v} onClick={handleSelect} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
-                ))}
-                {results.length===0 && (
-                  <div className="w-full py-10 grid place-items-center text-gray-400">
-                    <div className="flex flex-col items-center gap-3"><Search size={48}/><div>Wpisz zapytanie, aby zobaczyć wyniki.</div></div>
-                  </div>
-                )}
-              </div>
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {results.map((v)=> (
+                    <VideoCard key={v.video_id} video={v} onClick={handleSelect} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
+                  ))}
+                </div>
+                <div className="mt-4 flex items-center justify-center">
+                  {nextToken && (
+                    <button onClick={loadMore} className="px-4 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700">Pokaż więcej wyników</button>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </section>
@@ -667,3 +593,56 @@ function AuthPanel({ supabase, authView, setAuthView }){
     </div>
   );
 }
+
+
+// ===============================================================
+// FILE: netlify/functions/youtube-search.js  (ESM, "type":"module")
+// Obsługuje pageToken i zwraca nextPageToken do frontu
+// ===============================================================
+export const handler = async (event) => {
+  const YT_API_KEY = process.env.YT_API_KEY;
+  const params = new URLSearchParams(event.queryStringParameters || {});
+  const q = (params.get("q") || "").trim();
+  const pageToken = params.get("pageToken") || "";
+
+  const json = (code, data) => ({
+    statusCode: code,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify(data),
+  });
+
+  if (!YT_API_KEY) return json(500, { error: "Missing YT_API_KEY" });
+  if (!q) return json(200, { items: [], nextPageToken: null });
+
+  const url = new URL("https://www.googleapis.com/youtube/v3/search");
+  url.searchParams.set("part", "snippet");
+  url.searchParams.set("type", "video");
+  url.searchParams.set("maxResults", "24");
+  url.searchParams.set("q", q);
+  if (pageToken) url.searchParams.set("pageToken", pageToken);
+  url.searchParams.set("key", YT_API_KEY);
+
+  try {
+    const resp = await fetch(url.toString());
+    if (!resp.ok) {
+      const text = await resp.text();
+      console.error("YouTube API error", resp.status, text);
+      return json(resp.status, { error: "YouTube API error", status: resp.status, details: safeParse(text) });
+    }
+    const data = await resp.json();
+    const items = (data.items || []).map((it) => ({
+      video_id: it.id?.videoId,
+      title: it.snippet?.title,
+      channel_title: it.snippet?.channelTitle,
+      thumbnail_url: it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
+      publishedAt: it.snippet?.publishedAt,
+    })).filter(v => v.video_id);
+
+    return json(200, { items, nextPageToken: data.nextPageToken || null });
+  } catch (e) {
+    console.error("Fetch failed", e);
+    return json(500, { error: "Fetch failed" });
+  }
+};
+
+function safeParse(text){ try { return JSON.parse(text); } catch { return { raw: text }; } }
