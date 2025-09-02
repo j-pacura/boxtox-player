@@ -256,8 +256,7 @@ export default function App(){
 
   // Kolejka
   const [queue, setQueue] = useState([]);
-  the_queue_fix: // (label to avoid accidental edits)
-  const [queueIndex, setQueueIndex] = useState(0);
+    const [queueIndex, setQueueIndex] = useState(0);
   const [autoNext, setAutoNext] = useState(true);
   const [queueLabel, setQueueLabel] = useState("");
   const [userInteracted, setUserInteracted] = useState(false);
