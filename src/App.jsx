@@ -1,33 +1,24 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Search, Heart, Play, User, LogOut, Settings as SettingsIcon, ListVideo, Star, Film, Shield } from "lucide-react";
+import { Search, Heart, Play, User, LogOut, Settings as SettingsIcon, ListVideo, Star, Film } from "lucide-react";
 
-// BOXTOX PLAYER — Dark/Netflix-style redesign + ADMIN-GATED backend
-// 🔴 Zmiany kluczowe:
-// - Wyszukiwanie YT idzie teraz przez Netlify Function (/.netlify/functions/youtube-search) — klucz YT trzymany w env na Netlify.
-// - Supabase inicjalizowany TYLKO, gdy są env (VITE_SUPABASE_URL/ANON) i użytkownik zalogowany jako ADMIN (VITE_ADMIN_EMAIL).
-// - Dla zwykłych użytkowników: działa wyszukiwarka + odtwarzacz + ulubione/playlisty w LocalStorage. Brak widoku ustawień.
-// - Panel admina pojawia się gdy: ?admin=1 w URL LUB zalogowany email == VITE_ADMIN_EMAIL.
+// BOXTOX PLAYER — Dark redesign + PUBLIC AUTH (email signup for everyone)
+// - Każdy użytkownik może utworzyć konto (email/hasło) i mieć playlisty/ulubione w chmurze.
+// - Goście (bez logowania) mają LocalStorage.
+// - Wyszukiwanie YT przez Netlify Function (/.netlify/functions/youtube-search) — klucz po stronie serwera.
+// - Mobile UX: elementy playlisty = prosta lista bez miniaturek (< md), karty z miniaturami (>= md).
 //
-// 📁 DODAJ pliki (w repo):
-// 1) netlify/functions/youtube-search.js  — patrz na dole tego pliku (w komentarzu)
-// 2) netlify.toml  — patrz na dole (w komentarzu)
-//
-// 🌐 Ustaw zmienne środowiskowe w Netlify (Site settings → Environment variables):
-//   YT_API_KEY                — klucz do YouTube Data API v3 (SERVER-ONLY)
-//   VITE_SUPABASE_URL         — URL projektu Supabase (public)
-//   VITE_SUPABASE_ANON_KEY    — anon key Supabase (public)
-//   VITE_ADMIN_EMAIL          — email admina, np. you@company.com
-// (Po dodaniu env zrób redeploy.)
+// ENV (Netlify → Environment variables):
+//   YT_API_KEY               — klucz do YouTube Data API v3 (SERWER, bez VITE_)
+//   VITE_SUPABASE_URL        — URL Supabase (public)
+//   VITE_SUPABASE_ANON_KEY   — anon key Supabase (public)
 
-const LS_GUEST_KEY = "boxtox.guest.v2";
-
-// Env (build-time, public dla Vite; YT_API_KEY pozostaje tylko w funkcji serwerowej)
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || "").toLowerCase();
 
-function useSupabaseMaybe() {
+const LS_GUEST_KEY = "boxtox.guest.publicauth.v1";
+
+function useSupabase() {
   const enabled = !!(SUPABASE_URL && SUPABASE_ANON);
   const supabase = useMemo(() => {
     if (!enabled) return null;
@@ -60,7 +51,7 @@ function useGuestStore() {
   return [store, setStore];
 }
 
-function Header({ onSearch, query, setQuery, onOpenSettings, userEmail, onSignOut, activeTab, setActiveTab, showAdminEntry }) {
+function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut, activeTab, setActiveTab }) {
   return (
     <div className="w-full sticky top-0 z-40 bg-gray-900/90 backdrop-blur border-b border-gray-700">
       <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-4">
@@ -108,23 +99,20 @@ function Header({ onSearch, query, setQuery, onOpenSettings, userEmail, onSignOu
 
         <div className="flex-1" />
 
-        {/* Użytkownik / Admin */}
+        {/* Konto */}
         <div className="flex items-center gap-2">
-          {showAdminEntry && (
-            <button onClick={onOpenSettings} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 flex items-center gap-2">
-              <Shield size={16} /> Admin
-            </button>
-          )}
           {userEmail ? (
-            <div className="ml-1 flex items-center gap-2">
-              <div className="text-sm text-gray-300 hidden lg:block">{userEmail}</div>
+            <>
+              <div className="hidden lg:block text-sm text-gray-300">{userEmail}</div>
               <button onClick={onSignOut} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 flex items-center gap-2">
                 <LogOut size={16} />
                 <span className="hidden sm:inline">Wyloguj</span>
               </button>
-            </div>
+            </>
           ) : (
-            <div className="text-gray-400 text-sm flex items-center gap-1"><User size={16} /> Gość</div>
+            <button onClick={onOpenAccount} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+              <User size={16} /> Zaloguj / Rejestracja
+            </button>
           )}
         </div>
       </div>
@@ -203,7 +191,7 @@ function SkeletonCard() {
 }
 
 export default function App() {
-  const { supabase, user } = useSupabaseMaybe();
+  const { supabase, user } = useSupabase();
   const [guestStore, setGuestStore] = useGuestStore();
 
   const [query, setQuery] = useState("");
@@ -211,19 +199,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(null);
 
-  const [showSettings, setShowSettings] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   const [authView, setAuthView] = useState("signin");
   const [activeTab, setActiveTab] = useState("browse");
-  const [adminMode, setAdminMode] = useState(false); // URL switch
-
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    setAdminMode(p.get("admin") === "1");
-  }, []);
-
-  const isLogged = !!user;
-  const isAdmin = isLogged && user?.email && user.email.toLowerCase() === ADMIN_EMAIL;
-  const canShowAdmin = adminMode || isAdmin; // warunek pokazania przycisku panelu
 
   // Cloud state
   const [favorites, setFavorites] = useState([]);
@@ -231,12 +209,11 @@ export default function App() {
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(null);
   const [playlistItems, setPlaylistItems] = useState([]);
 
-  const isCloud = !!(supabase && isAdmin); // tylko ADMIN używa chmury
+  const isCloud = !!(supabase && user); // każdy zalogowany korzysta z chmury
 
-  // Load data (cloud lub local)
+  // Load data
   useEffect(() => {
     if (!isCloud) {
-      // Local
       setFavorites(guestStore.favorites || []);
       setPlaylists(guestStore.playlists || []);
       setPlaylistItems([]);
@@ -266,7 +243,7 @@ export default function App() {
       const res = await fetch(`/.netlify/functions/youtube-search?q=${encodeURIComponent(query)}`);
       if (!res.ok) throw new Error("YouTube search failed");
       const data = await res.json();
-      const items = (data.items || []).filter(v => v.video_id);
+      const items = (data.items || []).filter((v) => v.video_id);
       setResults(items);
       if (items.length) setActive(items[0]);
       setActiveTab("browse");
@@ -360,12 +337,11 @@ export default function App() {
         query={query}
         setQuery={setQuery}
         onSearch={search}
-        onOpenSettings={() => setShowSettings(true)}
-        userEmail={isLogged ? user.email : ""}
+        onOpenAccount={() => setShowAccount(true)}
+        userEmail={user?.email}
         onSignOut={signOut}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        showAdminEntry={canShowAdmin}
       />
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-12 gap-6">
@@ -408,8 +384,8 @@ export default function App() {
               ) : (
                 favorites.map((v) => (
                   <div key={v.video_id} className="flex gap-3 items-center cursor-pointer" onClick={() => setActive(v)}>
-                    <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700" />
-                    <div className="text-sm line-clamp-2 text-white/90">{v.title}</div>
+                    <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700 hidden md:block" />
+                    <div className="text-sm text-white/90 line-clamp-2">{v.title}</div>
                   </div>
                 ))
               )}
@@ -424,7 +400,23 @@ export default function App() {
           {selectedPlaylistId && (
             <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
               <div className="font-bold text-xl mb-2">Elementy playlisty</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-72 overflow-auto pr-1">
+
+              {/* Mobile: prosta lista bez miniaturek */}
+              <div className="md:hidden divide-y divide-gray-800 border border-gray-800 rounded-lg overflow-hidden">
+                {playlistItems.length === 0 ? (
+                  <div className="p-4 text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16} /> Ta playlista jest pusta.</div>
+                ) : (
+                  playlistItems.map((v) => (
+                    <button key={v.video_id} onClick={() => setActive(v)} className={`w-full text-left px-4 py-3 hover:bg-gray-800 ${active?.video_id === v.video_id ? "bg-gray-800" : "bg-gray-900"}`}>
+                      <div className="font-medium text-white line-clamp-2">{v.title}</div>
+                      <div className="text-xs text-gray-400">{v.channel_title}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              {/* Desktop: karty z miniaturami */}
+              <div className="hidden md:grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-72 overflow-auto pr-1 mt-3 md:mt-0">
                 {playlistItems.length === 0 ? (
                   <div className="text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16} /> Ta playlista jest pusta.</div>
                 ) : (
@@ -464,93 +456,32 @@ export default function App() {
         </section>
       </main>
 
-      {/* ADMIN MODAL */}
-      {showSettings && (
-        <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={() => setShowSettings(false)}>
-          <div className="w-full max-w-2xl bg-gray-900 text-white rounded-lg border border-gray-700 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      {/* ACCOUNT MODAL (public) */}
+      {showAccount && (
+        <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={() => setShowAccount(false)}>
+          <div className="w-full max-w-md bg-gray-900 text-white rounded-lg border border-gray-700 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-              <div className="font-semibold text-xl flex items-center gap-2"><Shield size={18}/> Panel administratora</div>
-              <button className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700" onClick={() => setShowSettings(false)}>Zamknij</button>
+              <div className="font-semibold text-xl">Konto</div>
+              <button className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700" onClick={() => setShowAccount(false)}>Zamknij</button>
             </div>
-            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <div className="font-medium">Logowanie (Supabase)</div>
-                {supabase ? (
-                  isLogged ? (
-                    <div className="rounded-lg border border-gray-700 p-4 bg-gray-800">
-                      <div className="text-sm text-gray-400">Zalogowano jako</div>
-                      <div className="font-medium">{user.email}</div>
-                      <div className="text-xs text-gray-400 mt-1">{isAdmin ? "ADMIN" : "Użytkownik bez uprawnień admina"}</div>
-                      <button className="mt-3 px-3 py-2 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-800 flex items-center gap-2" onClick={async () => { await supabase.auth.signOut(); }}>
-                        <LogOut size={16} /> Wyloguj
-                      </button>
-                    </div>
-                  ) : (
-                    canShowAdmin ? (
-                      <AuthPanel supabase={supabase} authView={authView} setAuthView={setAuthView} />
-                    ) : (
-                      <div className="text-sm text-gray-300">Aby zalogować się jako admin, otwórz stronę z parametrem <code>?admin=1</code> w URL.</div>
-                    )
-                  )
-                ) : (
-                  <div className="text-sm text-gray-300">
-                    Supabase nie jest skonfigurowany. Dodaj env <code>VITE_SUPABASE_URL</code> i <code>VITE_SUPABASE_ANON_KEY</code> w Netlify i zrób redeploy.
+            <div className="p-6">
+              {supabase ? (
+                user ? (
+                  <div className="rounded-lg border border-gray-700 p-4 bg-gray-800">
+                    <div className="text-sm text-gray-400">Zalogowano jako</div>
+                    <div className="font-medium">{user.email}</div>
+                    <button className="mt-3 px-3 py-2 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-800 flex items-center gap-2" onClick={async () => { await supabase.auth.signOut(); setShowAccount(false); }}>
+                      <LogOut size={16} /> Wyloguj
+                    </button>
                   </div>
-                )}
-              </div>
-
-              <div>
-                <div className="font-medium">Instrukcje</div>
-                <div className="rounded-lg border border-gray-700 p-4 bg-gray-800 text-sm text-gray-300 space-y-2">
-                  <p><strong>Wyszukiwarka</strong> korzysta z funkcji serwerowej Netlify. Klucz YT jest bezpieczny na serwerze.</p>
-                  <p><strong>Chmura</strong> (ulubione/playlisty) działa TYLKO dla konta admina. Reszta użytkowników zapis lokalny.</p>
-                  <p>Ustaw <code>VITE_ADMIN_EMAIL</code> w Netlify, aby wskazać konto admina.</p>
+                ) : (
+                  <AuthPanel supabase={supabase} authView={authView} setAuthView={setAuthView} />
+                )
+              ) : (
+                <div className="text-sm text-gray-300">
+                  Logowanie nieaktywne: dodaj env <code>VITE_SUPABASE_URL</code> i <code>VITE_SUPABASE_ANON_KEY</code> w Netlify i zrób redeploy.
                 </div>
-
-                {isAdmin && (
-                  <details className="rounded-lg border border-gray-700 p-4 bg-gray-800 mt-4">
-                    <summary className="cursor-pointer font-medium">SQL – schemat tabel</summary>
-                    <pre className="text-xs whitespace-pre-wrap mt-2 text-gray-300">{`
-create table if not exists public.playlists (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null default auth.uid(),
-  name text not null,
-  created_at timestamp with time zone default now()
-);
-create table if not exists public.playlist_items (
-  id uuid primary key default gen_random_uuid(),
-  playlist_id uuid references public.playlists(id) on delete cascade,
-  user_id uuid not null default auth.uid(),
-  video_id text not null,
-  title text,
-  channel_title text,
-  thumbnail_url text,
-  added_at timestamp with time zone default now()
-);
-create table if not exists public.favorites (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null default auth.uid(),
-  video_id text not null,
-  title text,
-  channel_title text,
-  thumbnail_url text,
-  created_at timestamp with time zone default now(),
-  unique (user_id, video_id)
-);
-alter table playlists enable row level security;
-alter table playlist_items enable row level security;
-alter table favorites enable row level security;
-create policy "own rows playlists" on playlists for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy "own rows playlist_items" on playlist_items for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy "own rows favorites" on favorites for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-                    `}</pre>
-                  </details>
-                )}
-              </div>
-            </div>
-
-            <div className="p-4 border-t border-gray-700 flex justify-end">
-              <button className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700" onClick={() => setShowSettings(false)}>Zamknij</button>
+              )}
             </div>
           </div>
         </div>
@@ -571,7 +502,7 @@ function AuthPanel({ supabase, authView, setAuthView }) {
       if (authView === "signup") {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        setMessage("Konto utworzone. Zaloguj się.");
+        setMessage("Konto utworzone. Sprawdź mail i zaloguj się.");
         setAuthView("signin");
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -596,49 +527,3 @@ function AuthPanel({ supabase, authView, setAuthView }) {
     </div>
   );
 }
-
-/*
-=================
- FILE: netlify/functions/youtube-search.js
-=================
-exports.handler = async (event) => {
-  const YT_API_KEY = process.env.YT_API_KEY;
-  const q = new URLSearchParams(event.queryStringParameters || {}).get('q') || '';
-  if (!YT_API_KEY) return { statusCode: 500, body: JSON.stringify({ error: 'Missing YT_API_KEY' }) };
-  if (!q.trim()) return { statusCode: 200, body: JSON.stringify({ items: [] }) };
-  const url = new URL('https://www.googleapis.com/youtube/v3/search');
-  url.searchParams.set('part', 'snippet');
-  url.searchParams.set('type', 'video');
-  url.searchParams.set('maxResults', '24');
-  url.searchParams.set('q', q);
-  url.searchParams.set('key', YT_API_KEY);
-  try {
-    const resp = await fetch(url.toString());
-    if (!resp.ok) throw new Error('YouTube API error');
-    const data = await resp.json();
-    const items = (data.items || []).map((it) => ({
-      video_id: it.id?.videoId,
-      title: it.snippet?.title,
-      channel_title: it.snippet?.channelTitle,
-      thumbnail_url: it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
-      publishedAt: it.snippet?.publishedAt,
-    }));
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ items }),
-    };
-  } catch (e) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Fetch failed' }) };
-  }
-};
-
-=================
- FILE: netlify.toml
-=================
-[build]
-  functions = "netlify/functions"
-# (opcjonalnie) jeśli używasz Vite
-# command = "npm run build"
-# publish = "dist"
-*/
