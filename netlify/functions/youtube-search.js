@@ -1,5 +1,5 @@
 // netlify/functions/youtube-search.js
-exports.handler = async (event) => {
+export async function handler(event) {
   const YT_API_KEY = process.env.YT_API_KEY;
   const q = new URLSearchParams(event.queryStringParameters || {}).get("q") || "";
 
@@ -52,4 +52,4 @@ exports.handler = async (event) => {
       body: JSON.stringify({ error: "Fetch failed" }),
     };
   }
-};
+}
