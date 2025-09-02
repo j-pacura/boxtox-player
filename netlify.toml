@@ -1,7 +1,24 @@
 [build]
-command = "npm run build"
-publish = "dist"
-
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
 
 [build.environment]
-NODE_VERSION = "18"
+  # Upewnia stabilny runtime podczas buildu i funkcji
+  NODE_VERSION = "18"
+
+[functions]
+  # Bundlowanie funkcji serwerowych (polecane dla Netlify)
+  node_bundler = "esbuild"
+
+# Przyjazny alias do funkcji (opcjonalnie)
+[[redirects]]
+  from = "/api/youtube-search"
+  to = "/.netlify/functions/youtube-search"
+  status = 200
+
+# SPA fallback dla Vite/React (routing po stronie klienta)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
