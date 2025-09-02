@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { Search, Heart, Play, User, LogOut, Settings as SettingsIcon, ListVideo, Star, Film } from "lucide-react";
 
-// BOXTOX PLAYER — interactive YouTube player with search, playlists & favorites
-// MVP działa od razu z LocalStorage (bez backendu).
-// Po dodaniu Supabase URL + Anon Key w ⚙️ Ustawieniach dostajesz logowanie i zapisy w chmurze.
+// BOXTOX PLAYER — Dark/Netflix-style redesign ⭐
+// - Paleta (Tailwind):
+//   tło główne: bg-gray-950, sekcje: bg-gray-900, karty: bg-gray-800
+//   tekst: text-white / text-gray-400, akcent: bg-red-600 hover:bg-red-700
+// - Ikony: lucide-react
+// - Line clamp: @tailwindcss/line-clamp (zainstaluj i dodaj do tailwind.config.js)
+// - Zachowana funkcjonalność: wyszukiwarka YT, odtwarzacz, ulubione, playlisty, Supabase auth
 
 const LS_SETTINGS_KEY = "boxtox.settings.v1";
 const LS_GUEST_KEY = "boxtox.guest.v1";
@@ -12,10 +17,8 @@ function useLocalSettings() {
   const [settings, setSettings] = useState(() => {
     try {
       const raw = localStorage.getItem(LS_SETTINGS_KEY);
-      return raw
-        ? JSON.parse(raw)
-        : { youtubeApiKey: "", supabaseUrl: "", supabaseAnonKey: "" };
-    } catch {
+      return raw ? JSON.parse(raw) : { youtubeApiKey: "", supabaseUrl: "", supabaseAnonKey: "" };
+    } catch (e) {
       return { youtubeApiKey: "", supabaseUrl: "", supabaseAnonKey: "" };
     }
   });
@@ -41,7 +44,7 @@ function useSupabase(settings) {
   const [user, setUser] = useState(null);
 
   useEffect(() => {
-    let subscription;
+    let sub;
     (async () => {
       if (!supabase) {
         setUser(null);
@@ -49,13 +52,12 @@ function useSupabase(settings) {
       }
       const { data } = await supabase.auth.getSession();
       setUser(data?.session?.user ?? null);
-      const res = supabase.auth.onAuthStateChange((_event, session) => {
+      sub = supabase.auth.onAuthStateChange((_event, session) => {
         setUser(session?.user ?? null);
       });
-      subscription = res?.data?.subscription;
     })();
     return () => {
-      if (subscription) subscription.unsubscribe();
+      if (sub && typeof sub.unsubscribe === "function") sub.unsubscribe();
     };
   }, [supabase]);
 
@@ -67,7 +69,7 @@ function useGuestStore() {
     try {
       const raw = localStorage.getItem(LS_GUEST_KEY);
       return raw ? JSON.parse(raw) : { favorites: [], playlists: [] };
-    } catch {
+    } catch (e) {
       return { favorites: [], playlists: [] };
     }
   });
@@ -77,74 +79,110 @@ function useGuestStore() {
   return [store, setStore];
 }
 
-function Header({ onSearch, query, setQuery, onOpenSettings, userEmail, onSignOut }) {
+function Header({ onSearch, query, setQuery, onOpenSettings, userEmail, onSignOut, activeTab, setActiveTab }) {
   return (
-    <div className="w-full sticky top-0 z-40 bg-white/80 backdrop-blur border-b">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+    <div className="w-full sticky top-0 z-40 bg-gray-900/90 backdrop-blur border-b border-gray-700">
+      <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-4">
+        {/* Logo */}
         <div className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-2xl bg-black text-white grid place-items-center font-bold">B</div>
-          <div className="font-extrabold tracking-tight text-xl">
-            BOXTOX <span className="text-black/60">PLAYER</span>
-          </div>
+          <div className="w-9 h-9 rounded-lg bg-red-600 grid place-items-center font-extrabold text-white">B</div>
+          <div className="font-extrabold tracking-tight text-white text-xl">BOXTOX <span className="text-gray-400">PLAYER</span></div>
         </div>
+
+        {/* Nawigacja */}
+        <nav className="hidden md:flex items-center gap-2 ml-2">
+          {[
+            { key: "browse", label: "Przeglądaj", icon: <ListVideo size={16} /> },
+            { key: "favorites", label: "Ulubione", icon: <Star size={16} /> },
+            { key: "playlists", label: "Playlisty", icon: <Film size={16} /> },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors border border-transparent ${
+                activeTab === tab.key ? "bg-red-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+
         <div className="flex-1" />
-        <div className="flex items-center gap-2 w-[520px] max-w-[50vw]">
+
+        {/* Wyszukiwarka */}
+        <div className="relative w-full max-w-2xl">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && onSearch()}
             placeholder="Szukaj na YouTube..."
-            className="w-full px-4 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-black/20"
+            className="w-full pl-4 pr-11 py-3 rounded-lg border border-gray-700 bg-gray-800 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600"
           />
-          <button
-            onClick={onSearch}
-            className="px-4 py-2 rounded-xl bg-black text-white hover:opacity-90 active:opacity-80"
-          >
-            Szukaj
+          <button onClick={onSearch} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-gray-800 hover:bg-gray-700 border border-gray-700">
+            <Search size={20} className="text-gray-300" />
           </button>
         </div>
+
         <div className="flex-1" />
-        <button onClick={onOpenSettings} className="px-3 py-2 rounded-xl border hover:bg-black/5">
-          ⚙️ Ustawienia
-        </button>
-        {userEmail ? (
-          <div className="ml-2 flex items-center gap-2">
-            <div className="text-sm text-black/70">{userEmail}</div>
-            <button onClick={onSignOut} className="px-3 py-2 rounded-xl border hover:bg-black/5">
-              Wyloguj
-            </button>
-          </div>
-        ) : null}
+
+        {/* Użytkownik / Ustawienia */}
+        <div className="flex items-center gap-2">
+          <button onClick={onOpenSettings} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+            <SettingsIcon size={16} />
+            <span className="hidden sm:inline">Ustawienia</span>
+          </button>
+          {userEmail ? (
+            <div className="ml-1 flex items-center gap-2">
+              <div className="text-sm text-gray-300 hidden lg:block">{userEmail}</div>
+              <button onClick={onSignOut} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+                <LogOut size={16} />
+                <span className="hidden sm:inline">Wyloguj</span>
+              </button>
+            </div>
+          ) : (
+            <div className="text-gray-400 text-sm flex items-center gap-1"><User size={16} /> Gość</div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function VideoCard({ video, onClick, isActive, onFav }) {
+function VideoCard({ video, onClick, isActive, onFav, isFavorite }) {
   return (
     <div
-      className={`rounded-2xl border overflow-hidden hover:shadow-sm transition cursor-pointer ${
-        isActive ? "ring-2 ring-black/20" : ""
+      className={`rounded-lg border border-gray-700 overflow-hidden bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${
+        isActive ? "ring-2 ring-red-600/60" : ""
       }`}
       onClick={() => onClick(video)}
     >
-      <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover" />
-      <div className="p-3">
-        <div className="font-medium line-clamp-2 leading-tight">{video.title}</div>
-        <div className="text-sm text-black/60 mt-1">{video.channel_title}</div>
-        <div className="mt-2 flex items-center gap-2">
+      <div className="relative">
+        <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover" />
+        {/* Overlay + Play */}
+        <div className="absolute inset-0 bg-black/0 hover:bg-black/50 transition-colors grid place-items-center">
+          <div className="opacity-0 group-hover:opacity-100"></div>
+          <div className="w-16 h-16 rounded-full bg-white/90 grid place-items-center shadow-md">
+            <Play className="text-gray-900" size={28} />
+          </div>
+        </div>
+      </div>
+      <div className="p-4">
+        <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
+        <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
+        <div className="mt-3 flex items-center justify-between">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onFav(video);
             }}
-            className="text-sm px-3 py-1 rounded-lg border hover:bg-black/5"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
           >
-            ⭐ Ulubione
+            <Heart size={16} className={isFavorite ? "text-red-500 fill-red-500" : "text-gray-400"} />
+            {isFavorite ? "W ulubionych" : "Ulubione"}
           </button>
-          <div className="text-xs text-black/40">
-            {video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : ""}
-          </div>
+          <div className="text-xs text-gray-500">{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : ""}</div>
         </div>
       </div>
     </div>
@@ -152,14 +190,16 @@ function VideoCard({ video, onClick, isActive, onFav }) {
 }
 
 function Player({ videoId }) {
-  if (!videoId)
-    return (
-      <div className="w-full aspect-video grid place-items-center border rounded-2xl">
-        <div className="text-black/50">Wybierz film, aby odtworzyć</div>
+  if (!videoId) return (
+    <div className="w-full aspect-video grid place-items-center border border-dashed border-gray-700 rounded-xl bg-gray-900">
+      <div className="flex flex-col items-center gap-2 text-gray-400">
+        <Film size={48} />
+        <div>Wybierz film, aby odtworzyć</div>
       </div>
-    );
+    </div>
+  );
   return (
-    <div className="w-full aspect-video rounded-2xl overflow-hidden border">
+    <div className="w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
       <iframe
         className="w-full h-full"
         src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
@@ -172,6 +212,18 @@ function Player({ videoId }) {
   );
 }
 
+function SkeletonCard() {
+  return (
+    <div className="rounded-lg border border-gray-700 overflow-hidden bg-gray-800 animate-pulse">
+      <div className="w-full aspect-video bg-gray-700" />
+      <div className="p-4 space-y-2">
+        <div className="h-4 bg-gray-700 rounded w-3/4" />
+        <div className="h-3 bg-gray-700 rounded w-1/2" />
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [settings, setSettings] = useLocalSettings();
   const { supabase, user } = useSupabase(settings);
@@ -180,10 +232,11 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [active, setActive] = useState(null);
+  const [active, setActive] = useState(null); // current video object
 
   const [showSettings, setShowSettings] = useState(false);
   const [authView, setAuthView] = useState("signin"); // signin | signup
+  const [activeTab, setActiveTab] = useState("browse");
 
   // Cloud state
   const [favorites, setFavorites] = useState([]);
@@ -193,9 +246,10 @@ export default function App() {
 
   const isCloud = !!(supabase && user);
 
-  // Initial cloud/local data load
+  // Load cloud data
   useEffect(() => {
     if (!supabase || !user) {
+      // Local
       setFavorites(guestStore.favorites || []);
       setPlaylists(guestStore.playlists || []);
       setPlaylistItems([]);
@@ -218,7 +272,6 @@ export default function App() {
       setPlaylistItems([]);
       setSelectedPlaylistId(null);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, user]);
 
   async function search() {
@@ -238,22 +291,21 @@ export default function App() {
       const res = await fetch(url.toString());
       if (!res.ok) throw new Error("YouTube API error");
       const data = await res.json();
-      const items =
-        (data.items || [])
-          .map((it) => ({
-            video_id: it.id?.videoId,
-            title: it.snippet?.title,
-            channel_title: it.snippet?.channelTitle,
-            thumbnail_url:
-              it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
-            publishedAt: it.snippet?.publishedAt,
-          }))
-          .filter((v) => v.video_id) || [];
+      const items = (data.items || [])
+        .map((it) => ({
+          video_id: it.id?.videoId,
+          title: it.snippet?.title,
+          channel_title: it.snippet?.channelTitle,
+          thumbnail_url: it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
+          publishedAt: it.snippet?.publishedAt,
+        }))
+        .filter((v) => v.video_id);
       setResults(items);
       if (items.length) setActive(items[0]);
+      setActiveTab("browse");
     } catch (e) {
       console.error(e);
-      alert("Błąd podczas wyszukiwania. Sprawdź klucz API i limity.");
+      alert("Błąd podczas wyszukiwania. Sprawdź klucz API.");
     } finally {
       setLoading(false);
     }
@@ -271,10 +323,7 @@ export default function App() {
   async function addToFavorites(video) {
     const v = toVideoMinimal(video);
     if (isCloud) {
-      const { error } = await supabase.from("favorites").upsert({
-        user_id: user.id,
-        ...v,
-      });
+      const { error } = await supabase.from("favorites").upsert({ user_id: user.id, ...v });
       if (error) {
         alert("Nie udało się dodać do Ulubionych (Supabase).");
         return;
@@ -289,19 +338,14 @@ export default function App() {
         const favs = exists ? prev.favorites : [v, ...prev.favorites];
         return { ...prev, favorites: favs };
       });
-      setFavorites((prev) =>
-        prev.find((x) => x.video_id === v.video_id) ? prev : [v, ...prev]
-      );
+      setFavorites((prev) => (prev.find((x) => x.video_id === v.video_id) ? prev : [v, ...prev]));
     }
   }
 
   async function createPlaylist(name) {
     if (!name?.trim()) return;
     if (isCloud) {
-      const { data, error } = await supabase
-        .from("playlists")
-        .insert({ user_id: user.id, name })
-        .select();
+      const { data, error } = await supabase.from("playlists").insert({ user_id: user.id, name }).select();
       if (error) return alert("Nie udało się utworzyć playlisty (Supabase).");
       setPlaylists((p) => [...p, data[0]]);
     } else {
@@ -318,11 +362,7 @@ export default function App() {
     const v = toVideoMinimal(video);
     if (!playlistId) return alert("Wybierz playlistę.");
     if (isCloud) {
-      const { error } = await supabase.from("playlist_items").insert({
-        playlist_id: playlistId,
-        user_id: user.id,
-        ...v,
-      });
+      const { error } = await supabase.from("playlist_items").insert({ playlist_id: playlistId, user_id: user.id, ...v });
       if (error) return alert("Nie udało się dodać do playlisty (Supabase).");
       if (playlistId === selectedPlaylistId) {
         loadPlaylistItems(playlistId);
@@ -331,9 +371,7 @@ export default function App() {
       setGuestStore((prev) => {
         const pls = prev.playlists.map((p) => {
           if (p.id === playlistId) {
-            if (!p.items.find((x) => x.video_id === v.video_id)) {
-              p.items = [v, ...p.items];
-            }
+            if (!p.items.find((x) => x.video_id === v.video_id)) p.items.unshift(v);
           }
           return p;
         });
@@ -364,12 +402,12 @@ export default function App() {
     }
   }
 
-  async function signOut() {
-    if (supabase) await supabase.auth.signOut();
-  }
+  async function signOut() { if (supabase) await supabase.auth.signOut(); }
+
+  const favoriteIds = new Set(favorites.map((f) => f.video_id));
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-neutral-50 text-neutral-900">
+    <div className="min-h-screen bg-gray-950 text-white">
       <Header
         query={query}
         setQuery={setQuery}
@@ -377,82 +415,70 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
         userEmail={user?.email}
         onSignOut={signOut}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
       />
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-12 gap-6">
-        {/* Left: sidebar */}
+        {/* Sidebar */}
         <aside className="col-span-12 lg:col-span-4 flex flex-col gap-4">
-          <section className="rounded-2xl border bg-white p-4">
+          <section className="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Playlisty</h2>
+              <h2 className="font-bold text-xl">Playlisty</h2>
               <button
                 onClick={() => {
                   const name = prompt("Nazwa playlisty");
                   if (name) createPlaylist(name);
                 }}
-                className="text-sm px-3 py-1 rounded-lg border hover:bg-black/5"
-              >
-                + Nowa
-              </button>
+                className="text-sm px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700"
+              >+ Nowa</button>
             </div>
             <div className="mt-3 space-y-2 max-h-64 overflow-auto pr-1">
               {playlists.length === 0 ? (
-                <div className="text-sm text-black/50">Brak playlist. Utwórz pierwszą.</div>
+                <div className="text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16} /> Brak playlist. Utwórz pierwszą.</div>
               ) : (
                 playlists.map((pl) => (
                   <button
                     key={pl.id}
                     onClick={() => loadPlaylistItems(pl.id)}
-                    className={`w-full text-left px-3 py-2 rounded-xl border hover:bg-black/5 ${
-                      selectedPlaylistId === pl.id ? "bg-black/5" : ""
-                    }`}
-                  >
-                    {pl.name}
-                  </button>
+                    className={`w-full text-left px-3 py-2 rounded-lg border border-gray-700 transition-colors ${selectedPlaylistId === pl.id ? "bg-gray-800" : "bg-gray-900 hover:bg-gray-800"}`}
+                  >{pl.name}</button>
                 ))
               )}
             </div>
             <div className="mt-4">
-              <label className="text-sm text-black/60">Dodaj aktywny film do:</label>
+              <label className="text-sm text-gray-400">Dodaj aktywny film do:</label>
               <div className="mt-2 flex items-center gap-2">
                 <select
-                  className="flex-1 px-3 py-2 rounded-xl border"
+                  className="flex-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 focus:outline-none focus:ring-2 focus:ring-red-600"
                   value={selectedPlaylistId || ""}
                   onChange={(e) => setSelectedPlaylistId(e.target.value || null)}
                 >
                   <option value="">— wybierz playlistę —</option>
                   {playlists.map((pl) => (
-                    <option value={pl.id} key={pl.id}>
-                      {pl.name}
-                    </option>
+                    <option value={pl.id} key={pl.id}>{pl.name}</option>
                   ))}
                 </select>
                 <button
                   onClick={() => active && addToPlaylist(selectedPlaylistId, active)}
-                  className="px-3 py-2 rounded-xl border hover:bg-black/5"
-                >
-                  Dodaj
-                </button>
+                  className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700"
+                >Dodaj</button>
               </div>
             </div>
           </section>
 
-          <section className="rounded-2xl border bg-white p-4">
+          <section className="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Ulubione</h2>
+              <h2 className="font-bold text-xl">Ulubione</h2>
             </div>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-80 overflow-auto pr-1">
               {favorites.length === 0 ? (
-                <div className="text-sm text-black/50">Brak ulubionych.</div>
+                <div className="text-sm text-gray-400 flex items-center gap-2"><Heart size={16} /> Brak ulubionych.</div>
               ) : (
                 favorites.map((v) => (
-                  <div
-                    key={v.video_id}
-                    className="flex gap-3 items-center cursor-pointer"
-                    onClick={() => setActive(v)}
-                  >
-                    <img src={v.thumbnail_url} className="w-20 h-12 rounded-lg object-cover border" />
-                    <div className="text-sm line-clamp-2">{v.title}</div>
+                  <div key={v.video_id} className="flex gap-3 items-center cursor-pointer" onClick={() => setActive(v)}>
+                    <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700" />
+                    <div className="text-sm line-clamp-2 text-white/90">{v.title}</div>
                   </div>
                 ))
               )}
@@ -465,110 +491,96 @@ export default function App() {
           <Player videoId={active?.video_id} />
 
           {selectedPlaylistId && (
-            <div className="rounded-2xl border bg-white p-4">
-              <div className="font-semibold mb-2">Elementy playlisty</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-72 overflow-auto pr-1">
+            <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
+              <div className="font-bold text-xl mb-2">Elementy playlisty</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-72 overflow-auto pr-1">
                 {playlistItems.length === 0 ? (
-                  <div className="text-sm text-black/50">Ta playlista jest pusta.</div>
+                  <div className="text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16} /> Ta playlista jest pusta.</div>
                 ) : (
                   playlistItems.map((v) => (
-                    <VideoCard
-                      key={v.video_id}
-                      video={v}
-                      onClick={setActive}
-                      isActive={active?.video_id === v.video_id}
-                      onFav={addToFavorites}
-                    />
+                    <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id === v.video_id} onFav={addToFavorites} isFavorite={favoriteIds.has(v.video_id)} />
                   ))
                 )}
               </div>
             </div>
           )}
 
-          <div className="rounded-2xl border bg-white p-4">
+          <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold">Wyniki wyszukiwania</div>
-              {loading && <div className="text-sm text-black/50">Szukam...</div>}
+              <div className="font-bold text-xl">Wyniki wyszukiwania</div>
+              {loading && <div className="text-sm text-gray-400">Szukam...</div>}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {results.map((v) => (
-                <VideoCard
-                  key={v.video_id}
-                  video={v}
-                  onClick={setActive}
-                  isActive={active?.video_id === v.video_id}
-                  onFav={addToFavorites}
-                />
-              ))}
-            </div>
+            {loading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {results.map((v) => (
+                  <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id === v.video_id} onFav={addToFavorites} isFavorite={favoriteIds.has(v.video_id)} />
+                ))}
+                {results.length === 0 && (
+                  <div className="w-full py-10 grid place-items-center text-gray-400">
+                    <div className="flex flex-col items-center gap-3">
+                      <Search size={48} />
+                      <div>Wpisz zapytanie, aby zobaczyć wyniki.</div>
+                      <button onClick={() => document.querySelector('input[placeholder="Szukaj na YouTube..."]').focus()} className="mt-1 px-4 py-3 rounded-lg bg-red-600 hover:bg-red-700">Przejdź do wyszukiwarki</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </section>
       </main>
 
       {/* SETTINGS & AUTH MODAL */}
       {showSettings && (
-        <div
-          className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4"
-          onClick={() => setShowSettings(false)}
-        >
-          <div
-            className="w-full max-w-2xl bg-white rounded-2xl border shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-4 border-b flex items-center justify-between">
-              <div className="font-semibold">Ustawienia & Konto</div>
-              <button className="px-3 py-1 rounded-lg border" onClick={() => setShowSettings(false)}>
-                Zamknij
-              </button>
+        <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={() => setShowSettings(false)}>
+          <div className="w-full max-w-2xl bg-gray-900 text-white rounded-lg border border-gray-700 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <div className="font-semibold text-xl">Ustawienia & Konto</div>
+              <button className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700" onClick={() => setShowSettings(false)}>Zamknij</button>
             </div>
-            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <div className="font-medium">YouTube API</div>
-                <label className="text-sm text-black/60">Klucz API</label>
+                <label className="text-sm text-gray-400">Klucz API</label>
                 <input
-                  className="mt-1 w-full px-3 py-2 rounded-xl border"
+                  className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-700 bg-gray-800 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600"
                   placeholder="AIza..."
                   value={settings.youtubeApiKey}
                   onChange={(e) => setSettings({ ...settings, youtubeApiKey: e.target.value })}
                 />
-                <p className="text-xs text-black/50 mt-2">
-                  Używane tylko w przeglądarce. Ogranicz klucz do referera domeny produkcyjnej.
-                </p>
+                <p className="text-xs text-gray-500 mt-2">Ogranicz klucz do domeny produkcyjnej (HTTP referrers).</p>
 
                 <div className="mt-6 font-medium">Supabase (opcjonalnie)</div>
-                <label className="text-sm text-black/60">Project URL</label>
+                <label className="text-sm text-gray-400">Project URL</label>
                 <input
-                  className="mt-1 w-full px-3 py-2 rounded-xl border"
+                  className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-700 bg-gray-800 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600"
                   placeholder="https://xxxx.supabase.co"
                   value={settings.supabaseUrl}
                   onChange={(e) => setSettings({ ...settings, supabaseUrl: e.target.value })}
                 />
-                <label className="text-sm text-black/60 mt-2 block">Anon Key</label>
+                <label className="text-sm text-gray-400 mt-2 block">Anon Key</label>
                 <input
-                  className="mt-1 w-full px-3 py-2 rounded-xl border"
+                  className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-700 bg-gray-800 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600"
                   placeholder="eyJhbGci..."
                   value={settings.supabaseAnonKey}
                   onChange={(e) => setSettings({ ...settings, supabaseAnonKey: e.target.value })}
                 />
-                <p className="text-xs text-black/50 mt-2">
-                  Po zapisaniu pojawi się logowanie. Włącz RLS i polityki na user_id.
-                </p>
+                <p className="text-xs text-gray-500 mt-2">Po zapisaniu pojawi się logowanie. Włącz RLS i polityki na user_id.</p>
               </div>
 
               <div>
                 {supabase ? (
                   <div>
                     {user ? (
-                      <div className="rounded-xl border p-3">
-                        <div className="text-sm">Zalogowano jako</div>
+                      <div className="rounded-lg border border-gray-700 p-4 bg-gray-800">
+                        <div className="text-sm text-gray-400">Zalogowano jako</div>
                         <div className="font-medium">{user.email}</div>
-                        <button
-                          className="mt-2 px-3 py-2 rounded-xl border"
-                          onClick={async () => {
-                            await supabase.auth.signOut();
-                          }}
-                        >
-                          Wyloguj
+                        <button className="mt-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-800 flex items-center gap-2" onClick={async () => { await supabase.auth.signOut(); }}>
+                          <LogOut size={16} /> Wyloguj
                         </button>
                       </div>
                     ) : (
@@ -576,9 +588,9 @@ export default function App() {
                     )}
 
                     <div className="mt-6">
-                      <details className="rounded-xl border p-3">
+                      <details className="rounded-lg border border-gray-700 p-4 bg-gray-800">
                         <summary className="cursor-pointer font-medium">SQL – schemat tabel</summary>
-                        <pre className="text-xs whitespace-pre-wrap mt-2">{`
+                        <pre className="text-xs whitespace-pre-wrap mt-2 text-gray-300">{`
 create table if not exists public.playlists (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null,
@@ -606,19 +618,19 @@ create table if not exists public.favorites (
   unique (user_id, video_id)
 );
 -- Po włączeniu RLS:
--- create policy "own rows" on playlists for all using (user_id = auth.uid()) with check (user_id = auth.uid());
--- create policy "own rows" on playlist_items for all using (user_id = auth.uid()) with check (user_id = auth.uid());
--- create policy "own rows" on favorites for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+-- create policy "own rows" on playlists for all using (user_id = auth.uid());
+-- create policy "own rows" on playlist_items for all using (user_id = auth.uid());
+-- create policy "own rows" on favorites for all using (user_id = auth.uid());
                         `}</pre>
                       </details>
                     </div>
                   </div>
                 ) : (
-                  <div className="text-sm text-black/70">
-                    Dodaj Supabase URL i Anon Key, aby włączyć logowanie oraz zapisywanie w chmurze.
-                    <div className="mt-3 rounded-xl border p-3 bg-black/5">
+                  <div className="text-sm text-gray-300">
+                    Dodaj Supabase URL i Anon Key, aby włączyć logowanie oraz zapisy w chmurze.
+                    <div className="mt-3 rounded-lg border border-gray-700 p-4 bg-gray-800">
                       <div className="font-medium mb-1">Tryb gościa (LocalStorage)</div>
-                      <ul className="list-disc ml-5">
+                      <ul className="list-disc ml-5 text-gray-400">
                         <li>Ulubione i Playlisty zapisywane lokalnie w przeglądarce</li>
                         <li>Brak konta/logowania</li>
                       </ul>
@@ -628,10 +640,8 @@ create table if not exists public.favorites (
               </div>
             </div>
 
-            <div className="p-4 border-t flex justify-end">
-              <button className="px-4 py-2 rounded-xl bg-black text-white" onClick={() => setShowSettings(false)}>
-                Zapisz
-              </button>
+            <div className="p-4 border-t border-gray-700 flex justify-end">
+              <button className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700" onClick={() => setShowSettings(false)}>Zapisz</button>
             </div>
           </div>
         </div>
@@ -667,44 +677,23 @@ function AuthPanel({ supabase, authView, setAuthView }) {
   }
 
   return (
-    <div className="rounded-xl border p-3">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="rounded-lg border border-gray-700 p-4 bg-gray-800">
+      <div className="flex items-center gap-2 mb-3">
         <button
-          className={`px-3 py-1 rounded-lg border ${authView === "signin" ? "bg-black text-white" : ""}`}
+          className={`px-3 py-2 rounded-lg border border-gray-700 ${authView === "signin" ? "bg-red-600" : "bg-gray-900 hover:bg-gray-800"}`}
           onClick={() => setAuthView("signin")}
-        >
-          Logowanie
-        </button>
+        >Logowanie</button>
         <button
-          className={`px-3 py-1 rounded-lg border ${authView === "signup" ? "bg-black text-white" : ""}`}
+          className={`px-3 py-2 rounded-lg border border-gray-700 ${authView === "signup" ? "bg-red-600" : "bg-gray-900 hover:bg-gray-800"}`}
           onClick={() => setAuthView("signup")}
-        >
-          Rejestracja
-        </button>
+        >Rejestracja</button>
       </div>
-      <label className="text-sm text-black/60">Email</label>
-      <input
-        className="mt-1 w-full px-3 py-2 rounded-xl border"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@example.com"
-      />
-      <label className="text-sm text-black/60 mt-2 block">Hasło</label>
-      <input
-        className="mt-1 w-full px-3 py-2 rounded-xl border"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        placeholder="••••••••"
-      />
-      {message ? <div className="mt-2 text-sm text-black/70">{message}</div> : null}
-      <button
-        disabled={loading}
-        onClick={submit}
-        className="mt-3 w-full px-3 py-2 rounded-xl bg-black text-white disabled:opacity-60"
-      >
-        {authView === "signup" ? "Utwórz konto" : "Zaloguj"}
-      </button>
+      <label className="text-sm text-gray-400">Email</label>
+      <input className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-700 bg-gray-900 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+      <label className="text-sm text-gray-400 mt-2 block">Hasło</label>
+      <input className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-700 bg-gray-900 text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+      {message ? <div className="mt-2 text-sm text-gray-300">{message}</div> : null}
+      <button disabled={loading} onClick={submit} className="mt-3 w-full px-3 py-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60">{authView === "signup" ? "Utwórz konto" : "Zaloguj"}</button>
     </div>
   );
 }
