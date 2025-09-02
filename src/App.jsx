@@ -3,15 +3,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X, SkipBack, SkipForward, Zap } from "lucide-react";
 
-// BOXTOX PLAYER — Auto‑next fix + "Pokaż więcej" wyników (paginacja)
-// - IFrame API: naprawiony autoplay + fallback detector końca utworu
-// - Kolejka: Odtwórz ulubione / Odtwórz playlistę, Auto‑następny, Poprzedni/Następny
-// - Wyniki: przycisk „Pokaż więcej wyników” (korzysta z pageToken z Netlify Function)
-// - Dropdown „Dodaj do playlisty”: zawsze nad kartą (z‑index), brak przycinania
+// BOXTOX PLAYER — Auto‑next (stabilny) + "Pokaż więcej" + drobny fix UI przycisków
+// - Player: mocniejszy fallback końca utworu (polling + tolerancja, działa także gdy YT nie wyśle ENDED)
+// - Wyniki: przycisk **Pokaż więcej wyników** ZAWSZE widoczny po pierwszej stronie (disabled jeśli brak nextToken)
+//           + opcjonalne auto‑doładowanie przez IntersectionObserver (scroll do dołu)
+// - VideoCard: rząd akcji wyrównany do lewej, `flex-wrap`, dropdown otwierany od LEWEJ (nie wychodzi poza kafelek)
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-const LS_GUEST_KEY = "boxtox.guest.publicauth.v5";
+const LS_GUEST_KEY = "boxtox.guest.publicauth.v6";
 
 function useSupabase() {
   const enabled = !!(SUPABASE_URL && SUPABASE_ANON);
@@ -65,7 +65,7 @@ function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut
           <button onClick={onSearch} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-gray-800 hover:bg-gray-700 border border-gray-700"><Search size={20} className="text-gray-300"/></button>
         </div>
         <div className="flex-1" />
-        <div className="flex items centerpiece gap-2">
+        <div className="flex items-center gap-2">
           {userEmail ? (
             <>
               <div className="hidden lg:block text-sm text-gray-300">{userEmail}</div>
@@ -97,7 +97,8 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
       <div className="p-4">
         <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
         <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
-        <div className="mt-3 flex items-center gap-2 relative">
+        {/* FIX UI: wyrównanie do lewej + zawijanie, żeby nic nie wychodziło poza kafelek */}
+        <div className="mt-3 flex flex-wrap items-center justify-start gap-2 relative">
           <button onClick={(e)=>{ e.stopPropagation(); onFavToggle(video, isFavorite); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
             <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"Usuń z ulubionych":"Ulubione"}
           </button>
@@ -105,7 +106,8 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
             <div className="relative" onClick={(e)=>e.stopPropagation()}>
               <button onClick={()=>setMenuOpen((o)=>!o)} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">Dodaj do playlisty <ChevronDown size={16} className="opacity-80"/></button>
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-[100]">
+                // MENU od LEWEJ, żeby nie wychodziło poza kartę po prawej stronie
+                <div className="absolute left-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-[100]">
                   <button className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg" onClick={async()=>{ const name = prompt("Nazwa nowej playlisty"); if(name){ const id = await onCreatePlaylist(name); if(id){ await onAddToPlaylist(id, video); setMenuOpen(false);} } }}><Plus size={16}/> Nowa playlista</button>
                   <div className="max-h-56 overflow-auto py-1">
                     {(!playlists||playlists.length===0) ? (
@@ -157,8 +159,7 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     if (!apiReady || !containerRef.current || playerRef.current) return;
     try {
       playerRef.current = new window.YT.Player(containerRef.current, {
-        width: '100%',
-        height: '100%',
+        width: '100%', height: '100%',
         playerVars: { rel: 0, modestbranding: 1, playsinline: 1, origin: window.location.origin },
         events: {
           onReady: (e) => {
@@ -166,15 +167,23 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
             else if (videoId) { try { e.target.cueVideoById(videoId); } catch {} }
           },
           onStateChange: (e) => {
+            if (!window.YT) return;
+            // ENDED
             if (e?.data === window.YT.PlayerState.ENDED) {
-              const now = Date.now();
-              if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
+              const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
+            }
+            // Gdyby YT nie wysłał ENDED, a zatrzymał się na końcu jako PAUSED
+            if (e?.data === window.YT.PlayerState.PAUSED) {
+              try {
+                const p = playerRef.current; const dur = p.getDuration?.(); const cur = p.getCurrentTime?.();
+                if (dur > 0 && cur >= dur - 0.2) {
+                  const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
+                }
+              } catch {}
             }
           },
           onError: (_e) => {
-            // w razie błędu – spróbuj przejść dalej
-            const now = Date.now();
-            if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
+            const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
           }
         },
       });
@@ -184,13 +193,10 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
   // Reakcja na zmianę videoId / userInteracted
   useEffect(() => {
     const p = playerRef.current; if (!apiReady || !p || !videoId) return;
-    try {
-      if (userInteracted) { p.loadVideoById(videoId); p.playVideo(); }
-      else { p.cueVideoById(videoId); }
-    } catch {}
+    try { if (userInteracted) { p.loadVideoById(videoId); p.playVideo(); } else { p.cueVideoById(videoId); } } catch {}
   }, [apiReady, videoId, userInteracted]);
 
-  // Fallback: polling blisko końca (gdyby onStateChange nie strzelił)
+  // Fallback polling — blisko końca (0.25s) + tylko gdy gra
   useEffect(() => {
     const p = playerRef.current; if (!p) return;
     const iv = setInterval(() => {
@@ -198,12 +204,11 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
         const state = p.getPlayerState?.();
         const dur = p.getDuration?.();
         const cur = p.getCurrentTime?.();
-        if (state === window.YT.PlayerState.PLAYING && dur > 0 && cur >= dur - 0.5) {
-          const now = Date.now();
-          if (now - lastEndedRef.current > 1500) { lastEndedRef.current = now; onEnded && onEnded(); }
+        if (dur > 0 && cur >= dur - 0.25 && (state === window.YT.PlayerState.PLAYING || state === window.YT.PlayerState.PAUSED)) {
+          const now = Date.now(); if (now - lastEndedRef.current > 1200) { lastEndedRef.current = now; onEnded && onEnded(); }
         }
       } catch {}
-    }, 1000);
+    }, 800);
     return () => clearInterval(iv);
   }, [apiReady, onEnded]);
 
@@ -262,6 +267,7 @@ export default function App(){
   // Pagination for results
   const [nextToken, setNextToken] = useState(null);
   const [lastQuery, setLastQuery] = useState("");
+  const sentinelRef = useRef(null);
 
   const isCloud = !!(supabase && user);
 
@@ -298,7 +304,8 @@ export default function App(){
   }
 
   async function loadMore(){
-    if(!nextToken || !lastQuery) return;
+    if(!lastQuery) return;
+    if(!nextToken){ return; } // nic więcej
     setLoading(true);
     try{
       const url = `/.netlify/functions/youtube-search?q=${encodeURIComponent(lastQuery)}&pageToken=${encodeURIComponent(nextToken)}`;
@@ -311,6 +318,20 @@ export default function App(){
     } catch(e){ console.error(e); alert("Nie udało się pobrać kolejnych wyników."); }
     finally{ setLoading(false); }
   }
+
+  // Auto‑doładowanie przy dojściu do dołu listy wyników
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const el = sentinelRef.current;
+    const obs = new IntersectionObserver((entries) => {
+      const first = entries[0];
+      if (first.isIntersecting && nextToken && !loading) {
+        loadMore();
+      }
+    }, { rootMargin: "200px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [nextToken, loading, lastQuery]);
 
   function toVideoMinimal(v){ return { video_id: v.video_id, title: v.title, channel_title: v.channel_title, thumbnail_url: v.thumbnail_url }; }
 
@@ -518,6 +539,7 @@ export default function App(){
 
           <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
             <div className="flex items-center justify-between mb-3"><div className="font-bold text-xl">Wyniki wyszukiwania</div>{loading && <div className="text-sm text-gray-400">Szukam...</div>}</div>
+
             {loading && results.length===0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{Array.from({length:6}).map((_,i)=><SkeletonCard key={i}/>)}</div>
             ) : (
@@ -527,11 +549,18 @@ export default function App(){
                     <VideoCard key={v.video_id} video={v} onClick={handleSelect} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
                   ))}
                 </div>
-                <div className="mt-4 flex items-center justify-center">
-                  {nextToken && (
-                    <button onClick={loadMore} className="px-4 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700">Pokaż więcej wyników</button>
-                  )}
-                </div>
+
+                {/* Pokaż więcej — zawsze widoczny po pierwszym ładowaniu; disabled jeśli brak nextToken */}
+                {results.length>0 && (
+                  <div className="mt-4 flex items-center justify-center">
+                    <button onClick={loadMore} disabled={!nextToken || loading} className={`px-4 py-2 rounded-lg border ${(!nextToken||loading)?"bg-gray-800 border-gray-700 text-gray-400 cursor-not-allowed":"bg-gray-800 hover:bg-gray-700 border-gray-700"}`}>
+                      {loading?"Ładowanie...": (nextToken?"Pokaż więcej wyników":"Brak kolejnych wyników")}
+                    </button>
+                  </div>
+                )}
+
+                {/* Auto‑load sentinel (niewidoczny) */}
+                <div ref={sentinelRef} className="h-1" />
               </>
             )}
           </div>
@@ -593,56 +622,3 @@ function AuthPanel({ supabase, authView, setAuthView }){
     </div>
   );
 }
-
-
-// ===============================================================
-// FILE: netlify/functions/youtube-search.js  (ESM, "type":"module")
-// Obsługuje pageToken i zwraca nextPageToken do frontu
-// ===============================================================
-export const handler = async (event) => {
-  const YT_API_KEY = process.env.YT_API_KEY;
-  const params = new URLSearchParams(event.queryStringParameters || {});
-  const q = (params.get("q") || "").trim();
-  const pageToken = params.get("pageToken") || "";
-
-  const json = (code, data) => ({
-    statusCode: code,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    body: JSON.stringify(data),
-  });
-
-  if (!YT_API_KEY) return json(500, { error: "Missing YT_API_KEY" });
-  if (!q) return json(200, { items: [], nextPageToken: null });
-
-  const url = new URL("https://www.googleapis.com/youtube/v3/search");
-  url.searchParams.set("part", "snippet");
-  url.searchParams.set("type", "video");
-  url.searchParams.set("maxResults", "24");
-  url.searchParams.set("q", q);
-  if (pageToken) url.searchParams.set("pageToken", pageToken);
-  url.searchParams.set("key", YT_API_KEY);
-
-  try {
-    const resp = await fetch(url.toString());
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error("YouTube API error", resp.status, text);
-      return json(resp.status, { error: "YouTube API error", status: resp.status, details: safeParse(text) });
-    }
-    const data = await resp.json();
-    const items = (data.items || []).map((it) => ({
-      video_id: it.id?.videoId,
-      title: it.snippet?.title,
-      channel_title: it.snippet?.channelTitle,
-      thumbnail_url: it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
-      publishedAt: it.snippet?.publishedAt,
-    })).filter(v => v.video_id);
-
-    return json(200, { items, nextPageToken: data.nextPageToken || null });
-  } catch (e) {
-    console.error("Fetch failed", e);
-    return json(500, { error: "Fetch failed" });
-  }
-};
-
-function safeParse(text){ try { return JSON.parse(text); } catch { return { raw: text }; } }
