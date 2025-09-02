@@ -1,431 +1,393 @@
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-// Pac-BOX (fixed-step): stabilna pętla + fokus + duszki
+/**
+ * Pac-BOX (grid/tick) — działa jak w Twoim przykładzie:
+ * - ruch co "tik" (MOVE_DELAY),
+ * - sterowanie: strzałki / WASD, spacja (pauza), Esc (zamknij modal jeśli podano onClose),
+ * - duchy z prostą losową AI,
+ * - power-dot (o): duszki stają się "zjadliwe",
+ * - NOWOŚĆ: gdy zjesz wszystkie kropki -> next level (szybciej),
+ * - NOWOŚĆ: rysowanie Pac-Mana jako żółtej "buźki" z animowanymi ustami.
+ */
+
 export default function PacBoxGame({ onClose }) {
   const canvasRef = useRef(null);
-  const wrapRef = useRef(null);
-  const focusRef = useRef(null);
+  const gameStateRef = useRef(null);
+  const animRef = useRef(null);
+  const keysRef = useRef({});
+  const lastTickRef = useRef(0);
+  const moveDelayRef = useRef(150); // ms między ruchami (będzie maleć na kolejnych poziomach)
+  const ghostTurnChanceRef = useRef(0.3); // szansa na zmianę kierunku w tiku
+  const runningRef = useRef(true);
 
-  const [running, setRunning] = useState(true);
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
   const [level, setLevel] = useState(1);
+  const [running, setRunning] = useState(true);
 
   // --- MAPA ---
-  const MAP = useMemo(
-    () => [
-      "#####################",
-      "#.........#.........#",
-      "#.###.###.#.###.###.#",
-      "#o# #.# #.#.# #.# #o#",
-      "#.###.###.#.###.###.#",
-      "#...................#",
-      "#.###.#.#####.#.###.#",
-      "#.....#...#...#.....#",
-      "#####.### # ###.#####",
-      "    #.#   G   #.#    ",
-      "#####.# ## ## #.#####",
-      "#.........P.........#",
-      "#.###.###.#.###.###.#",
-      "#o..#..... .....#..o#",
-      "###.#.#.#####.#.#.###",
-      "#.....#...#...#.....#",
-      "#.########.#.########",
-      "#...................#",
-      "#####################",
-    ],
-    []
-  );
+  const MAP = [
+    "####################",
+    "#........##........#",
+    "#.##.###.##.###.##.#",
+    "#o................o#",
+    "#.##.#.######.#.##.#",
+    "#....#...##...#....#",
+    "####.###.##.###.####",
+    "   #.....##.....#   ",
+    "####.##......##.####",
+    "#....##  GG  ##....#",
+    "####.##......##.####",
+    "   #.....##.....#   ",
+    "####.###.##.###.####",
+    "#........##........#",
+    "#.##.###.##.###.##.#",
+    "#o.#..........#..o#",
+    "##.#.#.######.#.#.##",
+    "#....#...##...#....#",
+    "#.######.##.######.#",
+    "#........P.........#",
+    "####################",
+  ];
+  const CELL = 20;
+  const W = MAP[0].length * CELL;
+  const H = MAP.length * CELL;
 
-  const TILE = 22;
-  const ROWS = MAP.length;
-  const COLS = MAP[0].length;
-  const W = COLS * TILE;
-  const H = ROWS * TILE;
+  // pomocnicze
+  const inBounds = (x, y) => x >= 0 && x < MAP[0].length && y >= 0 && y < MAP.length;
+  const isWall = (x, y) => !inBounds(x, y) || MAP[y][x] === "#";
 
-  const startPac = useMemo(() => {
-    for (let y = 0; y < ROWS; y++)
-      for (let x = 0; x < COLS; x++)
-        if (MAP[y][x] === "P") return { x, y };
-    return { x: 1, y: 1 };
-  }, [MAP]);
-
-  const startGhosts = useMemo(() => {
-    const arr = [];
-    for (let y = 0; y < ROWS; y++)
-      for (let x = 0; x < COLS; x++)
-        if (MAP[y][x] === "G") arr.push({ x, y });
-    if (arr.length === 0) arr.push({ x: (COLS / 2) | 0, y: (ROWS / 2) | 0 });
-    // Dobicie do 4 duchów obok generatora (jeśli trzeba)
-    while (arr.length < 4) {
-      const g = arr[0];
-      const cand = [
-        { x: g.x + 1, y: g.y },
-        { x: g.x - 1, y: g.y },
-        { x: g.x, y: g.y + 1 },
-        { x: g.x, y: g.y - 1 },
-      ].filter(
-        ({ x, y }) =>
-          x >= 0 && y >= 0 && x < COLS && y < ROWS && MAP[y][x] !== "#"
-      );
-      for (const c of cand) {
-        if (!arr.find((a) => a.x === c.x && a.y === c.y)) arr.push(c);
-        if (arr.length >= 4) break;
-      }
-      if (cand.length === 0) break;
+  // znajdź starty
+  function findPacStart() {
+    for (let y = 0; y < MAP.length; y++) {
+      for (let x = 0; x < MAP[y].length; x++) if (MAP[y][x] === "P") return { x, y };
     }
+    return { x: 10, y: MAP.length - 2 };
+  }
+  function findGhostStarts() {
+    const arr = [];
+    for (let y = 0; y < MAP.length; y++) {
+      for (let x = 0; x < MAP[y].length; x++) if (MAP[y][x] === "G") arr.push({ x, y });
+    }
+    if (arr.length === 0) arr.push({ x: 9, y: 9 }, { x: 10, y: 9 }, { x: 9, y: 10 }, { x: 10, y: 10 });
+    while (arr.length < 4) arr.push(arr[0]); // uzupełnij do 4
     return arr.slice(0, 4);
-  }, [MAP, COLS, ROWS]);
+  }
 
-  const stateRef = useRef(null);
-
-  const isWall = (x, y) =>
-    x < 0 || y < 0 || x >= COLS || y >= ROWS ? true : MAP[y][x] === "#";
-  const isPower = (x, y) => MAP[y][x] === "o";
-
-  // --- INIT ---
-  useEffect(() => {
+  function buildDots() {
     const dots = new Set();
-    for (let y = 0; y < ROWS; y++)
-      for (let x = 0; x < COLS; x++)
+    for (let y = 0; y < MAP.length; y++) {
+      for (let x = 0; x < MAP[y].length; x++) {
         if (MAP[y][x] === "." || MAP[y][x] === "o") dots.add(`${x},${y}`);
+      }
+    }
+    return dots;
+  }
 
-    const ghosts = startGhosts.map((g, i) => ({
-      x: g.x + 0.5,
-      y: g.y + 0.5,
-      dir: { x: 0, y: -1 },
-      color: ["#ef4444", "#22d3ee", "#f472b6", "#f59e0b"][i % 4],
-      frightened: 0,
-    }));
-
-    stateRef.current = {
-      pac: {
-        x: startPac.x + 0.5,
-        y: startPac.y + 0.5,
-        dir: { x: 1, y: 0 },
-        next: { x: 1, y: 0 },
-      },
-      ghosts,
-      dots,
+  function resetPositions(state) {
+    const p = findPacStart();
+    const gs = findGhostStarts();
+    state.pacman = {
+      x: p.x,
+      y: p.y,
+      dir: { x: 1, y: 0 },
+      next: { x: 1, y: 0 },
     };
+    state.ghosts = [
+      { x: gs[0].x, y: gs[0].y, dir: { x: 1, y: 0 }, color: "#ff0000" },
+      { x: gs[1].x, y: gs[1].y, dir: { x: -1, y: 0 }, color: "#00ffff" },
+      { x: gs[2].x, y: gs[2].y, dir: { x: 0, y: -1 }, color: "#ffb8ff" },
+      { x: gs[3].x, y: gs[3].y, dir: { x: 0, y: 1 }, color: "#ffb852" },
+    ];
+  }
+
+  // INIT
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.width = W;
+    canvas.height = H;
+
+    gameStateRef.current = {
+      pacman: { x: 10, y: MAP.length - 2, dir: { x: 1, y: 0 }, next: { x: 1, y: 0 } },
+      ghosts: [],
+      dots: buildDots(),
+      power: 0,
+    };
+    resetPositions(gameStateRef.current);
 
     setScore(0);
     setLives(3);
     setLevel(1);
     setRunning(true);
+    runningRef.current = true;
+    moveDelayRef.current = 150;
+    ghostTurnChanceRef.current = 0.3;
+  }, []); // eslint-disable-line
 
-    // Fokus na obszar gry, żeby strzałki działały
-    const giveFocus = () => {
-      try {
-        focusRef.current?.focus();
-      } catch {}
-    };
-    setTimeout(giveFocus, 0);
-    wrapRef.current?.addEventListener("pointerdown", giveFocus);
-    return () => wrapRef.current?.removeEventListener("pointerdown", giveFocus);
-  }, [MAP, ROWS, COLS, startPac, startGhosts]);
-
-  // --- STEROWANIE ---
+  // Sterowanie
   useEffect(() => {
-    const onKey = (e) => {
-      const s = stateRef.current;
+    const onDown = (e) => {
+      keysRef.current[e.key] = true;
+      const s = gameStateRef.current;
       if (!s) return;
       switch (e.key) {
         case "ArrowLeft":
-          s.pac.next = { x: -1, y: 0 };
-          e.preventDefault();
-          break;
+        case "a":
+          s.pacman.next = { x: -1, y: 0 }; e.preventDefault(); break;
         case "ArrowRight":
-          s.pac.next = { x: 1, y: 0 };
-          e.preventDefault();
-          break;
+        case "d":
+          s.pacman.next = { x: 1, y: 0 }; e.preventDefault(); break;
         case "ArrowUp":
-          s.pac.next = { x: 0, y: -1 };
-          e.preventDefault();
-          break;
+        case "w":
+          s.pacman.next = { x: 0, y: -1 }; e.preventDefault(); break;
         case "ArrowDown":
-          s.pac.next = { x: 0, y: 1 };
-          e.preventDefault();
-          break;
+        case "s":
+          s.pacman.next = { x: 0, y: 1 }; e.preventDefault(); break;
         case " ":
-          setRunning((r) => !r);
+          setRunning((r) => { runningRef.current = !r; return !r; });
           e.preventDefault();
           break;
         case "Escape":
-          onClose?.();
+          if (onClose) onClose();
           e.preventDefault();
           break;
       }
     };
-    document.addEventListener("keydown", onKey, { passive: false });
-    return () => document.removeEventListener("keydown", onKey);
+    const onUp = (e) => { keysRef.current[e.key] = false; };
+    window.addEventListener("keydown", onDown, { passive: false });
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
   }, [onClose]);
 
-  // --- PĘTLA (fixed-step) ---
-  useEffect(() => {
-    let raf;
-    let prev = 0;
-    let acc = 0;
-    const STEP = 1 / 60; // 60 Hz
-    const ctx = canvasRef.current?.getContext("2d");
+  // Pomocnicze
+  const canMove = (x, y, d) => !isWall(x + d.x, y + d.y);
 
-    const tick = (ts) => {
-      try {
-        if (!ctx) {
-          raf = requestAnimationFrame(tick);
-          return;
-        }
-        if (!prev) prev = ts;
-        let dt = (ts - prev) / 1000;
-        if (dt > 0.25) dt = 0.25; // zabezpieczenie
-        prev = ts;
-        acc += dt;
-
-        while (acc >= STEP) {
-          if (running) update(stateRef.current, STEP);
-          acc -= STEP;
-        }
-        render(ctx, stateRef.current);
-      } catch (e) {
-        // cicho loguj w prod
-        // console.error("PacBox loop error", e);
-      }
-      raf = requestAnimationFrame(tick);
-    };
-
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [running]);
-
-  // --- LOGIKA ---
-  function align(ent) {
-    const cx = Math.round(ent.x - 0.5) + 0.5;
-    const cy = Math.round(ent.y - 0.5) + 0.5;
-    const ok = Math.abs(ent.x - cx) < 0.1 && Math.abs(ent.y - cy) < 0.1;
-    if (ok) {
-      ent.x = cx;
-      ent.y = cy;
-    }
-    return ok;
-  }
-
-  function update(s, dt) {
+  function nextLevel() {
+    const s = gameStateRef.current;
     if (!s) return;
-    const p = s.pac;
+    setLevel((l) => l + 1);
+    // przyspiesz grę z limitem
+    moveDelayRef.current = Math.max(70, Math.floor(moveDelayRef.current * 0.92));
+    ghostTurnChanceRef.current = Math.min(0.5, ghostTurnChanceRef.current + 0.02);
+    s.dots = buildDots();
+    s.power = 0;
+    resetPositions(s);
+    // mały bonus
+    setScore((sc) => sc + 100);
+    lastTickRef.current = performance.now();
+  }
 
-    // zmiana kierunku na środku kafla
-    if (align(p)) {
-      const tx = Math.round(p.x - 0.5) + p.next.x;
-      const ty = Math.round(p.y - 0.5) + p.next.y;
-      if (!isWall(tx, ty)) p.dir = { ...p.next };
-    }
-
-    // ruch pac-mana
-    const tx = Math.round(p.x - 0.5) + p.dir.x;
-    const ty = Math.round(p.y - 0.5) + p.dir.y;
-    const SPEED_P = 7; // tiles/s
-    if (!isWall(tx, ty)) {
-      p.x += p.dir.x * SPEED_P * dt;
-      p.y += p.dir.y * SPEED_P * dt;
-    } else {
-      align(p);
-    }
-
-    // zjadanie kropek
-    const cx = Math.round(p.x - 0.5),
-      cy = Math.round(p.y - 0.5);
-    const key = `${cx},${cy}`;
-    if (s.dots.has(key)) {
-      s.dots.delete(key);
-      if (isPower(cx, cy)) {
-        setScore((sc) => sc + 50);
-        s.ghosts.forEach((g) => (g.frightened = 6));
-      } else setScore((sc) => sc + 10);
-
-      // poziom ukończony
-      if (s.dots.size === 0) {
-        setLevel((l) => l + 1);
-        for (let y = 0; y < ROWS; y++)
-          for (let x = 0; x < COLS; x++)
-            if (MAP[y][x] === "." || MAP[y][x] === "o")
-              s.dots.add(`${x},${y}`);
-        p.x = startPac.x + 0.5;
-        p.y = startPac.y + 0.5;
-        p.dir = { x: 1, y: 0 };
-        p.next = p.dir;
-        s.ghosts.forEach((g, i) => {
-          const sg = startGhosts[i % startGhosts.length];
-          g.x = sg.x + 0.5;
-          g.y = sg.y + 0.5;
-          g.dir = { x: 0, y: -1 };
-          g.frightened = 0;
-        });
+  function loseLife() {
+    setLives((lv) => {
+      const nv = lv - 1;
+      if (nv <= 0) {
+        // game over -> reset pełny
+        const s = gameStateRef.current;
+        if (!s) return 3;
+        setScore(0);
+        setLevel(1);
+        moveDelayRef.current = 150;
+        ghostTurnChanceRef.current = 0.3;
+        s.dots = buildDots();
+        s.power = 0;
+        resetPositions(s);
+        return 3;
       }
-    }
-
-    // duchy
-    s.ghosts.forEach((g) => {
-      if (g.frightened > 0) g.frightened -= dt;
-      const centered = align(g);
-      const SPEED_G = g.frightened > 0 ? 5 : 6;
-      if (centered) {
-        const dirs = [
-          { x: 1, y: 0 },
-          { x: -1, y: 0 },
-          { x: 0, y: 1 },
-          { x: 0, y: -1 },
-        ].filter((d) => !(d.x === -g.dir.x && d.y === -g.dir.y));
-        const options = dirs.filter(
-          (d) =>
-            !isWall(Math.round(g.x - 0.5) + d.x, Math.round(g.y - 0.5) + d.y)
-        );
-        if (options.length) {
-          options.sort((a, b) => {
-            const da =
-              Math.abs(g.x + a.x - p.x) + Math.abs(g.y + a.y - p.y);
-            const db =
-              Math.abs(g.x + b.x - p.x) + Math.abs(g.y + b.y - p.y);
-            return g.frightened <= 0 ? da - db : db - da;
-          });
-          g.dir = options[0];
-        }
+      // reset pozycji
+      const s = gameStateRef.current;
+      if (s) {
+        s.power = 0;
+        resetPositions(s);
       }
-      const nx = Math.round(g.x - 0.5) + g.dir.x;
-      const ny = Math.round(g.y - 0.5) + g.dir.y;
-      if (!isWall(nx, ny)) {
-        g.x += g.dir.x * SPEED_G * dt;
-        g.y += g.dir.y * SPEED_G * dt;
-      }
+      return nv;
     });
+    lastTickRef.current = performance.now();
+  }
 
-    // kolizje
-    for (const g of s.ghosts) {
-      const dx = g.x - p.x,
-        dy = g.y - p.y;
-      if (dx * dx + dy * dy < 0.2) {
-        if (g.frightened > 0) {
-          setScore((sc) => sc + 200);
-          const sg = startGhosts[0];
-          g.x = sg.x + 0.5;
-          g.y = sg.y + 0.5;
-          g.dir = { x: 0, y: -1 };
-          g.frightened = 0;
-        } else {
-          setLives((v) => {
-            const nv = v - 1;
-            if (nv <= 0) {
-              s.dots.clear();
-              for (let y = 0; y < ROWS; y++)
-                for (let x = 0; x < COLS; x++)
-                  if (MAP[y][x] === "." || MAP[y][x] === "o")
-                    s.dots.add(`${x},${y}`);
-              setScore(0);
-              setLevel(1);
-              return 3;
+  // Pętla gry
+  useEffect(() => {
+    function loop(ts) {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      const s = gameStateRef.current;
+      if (!ctx || !s) {
+        animRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
+      // logika co "tik"
+      if (runningRef.current && ts - lastTickRef.current >= moveDelayRef.current) {
+        lastTickRef.current = ts;
+
+        // kierunek Pac-Mana
+        if (canMove(s.pacman.x, s.pacman.y, s.pacman.next)) {
+          s.pacman.dir = { ...s.pacman.next };
+        }
+        if (canMove(s.pacman.x, s.pacman.y, s.pacman.dir)) {
+          s.pacman.x += s.pacman.dir.x;
+          s.pacman.y += s.pacman.dir.y;
+
+          const key = `${s.pacman.x},${s.pacman.y}`;
+          if (s.dots.has(key)) {
+            s.dots.delete(key);
+            if (MAP[s.pacman.y][s.pacman.x] === "o") {
+              setScore((v) => v + 50);
+              s.power = 100; // ~100 tików
+            } else {
+              setScore((v) => v + 10);
             }
-            return nv;
-          });
-          p.x = startPac.x + 0.5;
-          p.y = startPac.y + 0.5;
-          p.dir = { x: 1, y: 0 };
-          p.next = p.dir;
-          s.ghosts.forEach((gg, i) => {
-            const sg = startGhosts[i % startGhosts.length];
-            gg.x = sg.x + 0.5;
-            gg.y = sg.y + 0.5;
-            gg.dir = { x: 0, y: -1 };
-            gg.frightened = 0;
-          });
-          break;
+            // sprawdź wyczyszczenie planszy
+            if (s.dots.size === 0) nextLevel();
+          }
+        }
+
+        // Ruch duchów (prosta AI: losowa zmiana kierunku z prawdopodobieństwem)
+        s.ghosts.forEach((g) => {
+          const moves = [
+            { x: 1, y: 0 },
+            { x: -1, y: 0 },
+            { x: 0, y: 1 },
+            { x: 0, y: -1 },
+          ].filter((d) => canMove(g.x, g.y, d));
+
+          if (moves.length) {
+            // unikaj natychmiastowego zawracania chyba, że brak opcji
+            const notBack = moves.filter((d) => !(d.x === -g.dir?.x && d.y === -g.dir?.y));
+            const pool = notBack.length ? notBack : moves;
+
+            if (Math.random() < ghostTurnChanceRef.current || !g.dir || !canMove(g.x, g.y, g.dir)) {
+              g.dir = pool[Math.floor(Math.random() * pool.length)];
+            }
+            if (g.dir && canMove(g.x, g.y, g.dir)) {
+              g.x += g.dir.x;
+              g.y += g.dir.y;
+            }
+          }
+        });
+
+        // Kolizje
+        for (const g of s.ghosts) {
+          if (g.x === s.pacman.x && g.y === s.pacman.y) {
+            if (s.power > 0) {
+              setScore((v) => v + 200);
+              // odsyłamy ducha na "spawn" (pierwszy G na mapie)
+              const spawns = findGhostStarts();
+              const home = spawns[0];
+              g.x = home.x; g.y = home.y; g.dir = { x: 0, y: -1 };
+            } else {
+              loseLife();
+              break;
+            }
+          }
+        }
+
+        if (s.power > 0) s.power -= 1;
+      }
+
+      // Rysowanie
+      // tło
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+
+      // ściany
+      for (let y = 0; y < MAP.length; y++) {
+        for (let x = 0; x < MAP[y].length; x++) {
+          if (MAP[y][x] === "#") {
+            ctx.fillStyle = "#1f3bff"; // niebieskie bloki
+            ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+          }
         }
       }
-    }
-  }
 
-  // --- RENDER ---
-  function render(ctx, s) {
-    const wrap = wrapRef.current;
-    if (!wrap || !s) return;
-    const scale = Math.max(
-      0.5,
-      Math.min((wrap.clientWidth - 16) / W, (wrap.clientHeight - 140) / H, 2)
-    );
-    const cw = Math.max(1, Math.floor(W * scale));
-    const ch = Math.max(1, Math.floor(H * scale));
-    if (
-      canvasRef.current.width !== cw ||
-      canvasRef.current.height !== ch
-    ) {
-      canvasRef.current.width = cw;
-      canvasRef.current.height = ch;
-    }
+      // kropki
+      s.dots.forEach((key) => {
+        const [x, y] = key.split(",").map(Number);
+        const large = MAP[y][x] === "o";
+        ctx.fillStyle = large ? "#ffd166" : "#ffee58";
+        ctx.beginPath();
+        ctx.arc(
+          x * CELL + CELL / 2,
+          y * CELL + CELL / 2,
+          large ? 5 : 2,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      });
 
-    ctx.clearRect(0, 0, cw, ch);
-    ctx.save();
-    ctx.scale(scale, scale);
+      // Pac-Man — żółta buźka z ustami (animacja)
+      const p = gameStateRef.current.pacman;
+      const heading =
+        p.dir.x === 1 ? 0 :
+        p.dir.x === -1 ? Math.PI :
+        p.dir.y === -1 ? -Math.PI / 2 :
+        Math.PI / 2;
 
-    // tło
-    ctx.fillStyle = "#0b1220";
-    ctx.fillRect(0, 0, W, H);
+      const t = ts / 1000;
+      const mouth = 0.15 + 0.20 * Math.abs(Math.sin(t * 6)); // 0.15..0.35 rad
 
-    // mapa + kropki
-    for (let y = 0; y < ROWS; y++) {
-      for (let x = 0; x < COLS; x++) {
-        const c = MAP[y][x];
-        if (c === "#") {
-          ctx.fillStyle = "#1f2937";
-          ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
-          ctx.strokeStyle = "#374151";
-          ctx.strokeRect(
-            x * TILE + 0.5,
-            y * TILE + 0.5,
-            TILE - 1,
-            TILE - 1
-          );
-        }
-        const key = `${x},${y}`;
-        if (s.dots.has(key)) {
-          ctx.fillStyle = c === "o" ? "#fde047" : "#9ca3af";
-          ctx.beginPath();
-          ctx.arc(
-            x * TILE + TILE / 2,
-            y * TILE + TILE / 2,
-            c === "o" ? 4 : 2.5,
-            0,
-            Math.PI * 2
-          );
-          ctx.fill();
-        }
-      }
-    }
-
-    // pac
-    const p = s.pac;
-    ctx.fillStyle = "#facc15";
-    ctx.beginPath();
-    ctx.arc(p.x * TILE, p.y * TILE, TILE * 0.38, 0, Math.PI * 2);
-    ctx.fill();
-
-    // duchy
-    s.ghosts.forEach((g) => {
-      ctx.fillStyle = g.frightened > 0 ? "#60a5fa" : g.color;
+      ctx.fillStyle = "#ffeb3b";
       ctx.beginPath();
-      ctx.arc(g.x * TILE, g.y * TILE, TILE * 0.36, 0, Math.PI * 2);
+      ctx.moveTo(p.x * CELL + CELL / 2, p.y * CELL + CELL / 2);
+      ctx.arc(
+        p.x * CELL + CELL / 2,
+        p.y * CELL + CELL / 2,
+        CELL / 2 - 2,
+        heading + mouth,
+        heading - mouth,
+        false
+      );
+      ctx.closePath();
       ctx.fill();
-    });
 
-    ctx.restore();
-  }
+      // Duchy
+      for (const g of gameStateRef.current.ghosts) {
+        ctx.fillStyle = gameStateRef.current.power > 0 ? "#4ea1ff" : g.color;
+        ctx.beginPath();
+        ctx.arc(
+          g.x * CELL + CELL / 2,
+          g.y * CELL + CELL / 2,
+          CELL / 2 - 2,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+
+      animRef.current = requestAnimationFrame(loop);
+    }
+
+    animRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animRef.current);
+  }, []); // eslint-disable-line
+
+  // Przyciski
+  const restart = () => {
+    const s = gameStateRef.current;
+    if (!s) return;
+    s.dots = buildDots();
+    s.power = 0;
+    resetPositions(s);
+    setScore(0);
+    setLives(3);
+    setLevel(1);
+    moveDelayRef.current = 150;
+    ghostTurnChanceRef.current = 0.3;
+    setRunning(true);
+    runningRef.current = true;
+    lastTickRef.current = performance.now();
+  };
+
+  useEffect(() => { runningRef.current = running; }, [running]);
 
   return (
-    <div
-      ref={wrapRef}
-      className="w-full h-full flex flex-col"
-      role="application"
-      aria-label="Pac-BOX"
-    >
+    <div className="flex flex-col h-full">
       <div className="flex items-center justify-between p-3 border-b border-gray-800">
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex items-center gap-4 text-sm">
           <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">
             Score: <b>{score}</b>
           </span>
@@ -434,6 +396,9 @@ export default function PacBoxGame({ onClose }) {
           </span>
           <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">
             Level: <b>{level}</b>
+          </span>
+          <span className={running ? "text-green-400" : "text-red-400"}>
+            {running ? "RUNNING" : "PAUSED"}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -444,6 +409,12 @@ export default function PacBoxGame({ onClose }) {
             {running ? "Pauza" : "Wznów"}
           </button>
           <button
+            onClick={restart}
+            className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
+          >
+            Restart
+          </button>
+          <button
             onClick={onClose}
             className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-sm"
           >
@@ -452,53 +423,44 @@ export default function PacBoxGame({ onClose }) {
         </div>
       </div>
 
-      <div
-        ref={focusRef}
-        tabIndex={0}
-        className="flex-1 grid place-items-center p-2 outline-none"
-      >
-        <canvas ref={canvasRef} className="max-w-full max-h-full" />
+      <div className="flex-1 grid place-items-center p-3">
+        <canvas
+          ref={canvasRef}
+          className="border border-gray-700 bg-black w-full max-w-full"
+          style={{ imageRendering: "pixelated" }}
+          tabIndex={0}
+        />
       </div>
 
-      {/* Sterowanie mobilne */}
-      <div className="md:hidden p-3 grid grid-cols-3 gap-2 place-items-center">
+      {/* Mobile controls */}
+      <div className="md:hidden p-3 grid grid-cols-3 gap-2 place-items-center border-t border-gray-800">
         <div />
         <button
-          onClick={() => {
-            const s = stateRef.current;
-            if (s) s.pac.next = { x: 0, y: -1 };
-          }}
-          className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800"
+          onTouchStart={() => { const s = gameStateRef.current; if (s) s.pacman.next = { x: 0, y: -1 }; }}
+          className="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-xl"
         >
           ↑
         </button>
         <div />
+
         <button
-          onClick={() => {
-            const s = stateRef.current;
-            if (s) s.pac.next = { x: -1, y: 0 };
-          }}
-          className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800"
+          onTouchStart={() => { const s = gameStateRef.current; if (s) s.pacman.next = { x: -1, y: 0 }; }}
+          className="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-xl"
         >
           ←
         </button>
         <div />
         <button
-          onClick={() => {
-            const s = stateRef.current;
-            if (s) s.pac.next = { x: 1, y: 0 };
-          }}
-          className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800"
+          onTouchStart={() => { const s = gameStateRef.current; if (s) s.pacman.next = { x: 1, y: 0 }; }}
+          className="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-xl"
         >
           →
         </button>
+
         <div />
         <button
-          onClick={() => {
-            const s = stateRef.current;
-            if (s) s.pac.next = { x: 0, y: 1 };
-          }}
-          className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800"
+          onTouchStart={() => { const s = gameStateRef.current; if (s) s.pacman.next = { x: 0, y: 1 }; }}
+          className="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-xl"
         >
           ↓
         </button>
