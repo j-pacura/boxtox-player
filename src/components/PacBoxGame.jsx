@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 
-// Pac-BOX: poprawiona wersja (sterowanie + duchy + odporność na błędy)
+// Pac-BOX (fixed-step): stabilna pętla + fokus + duszki
 export default function PacBoxGame({ onClose }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -11,6 +11,7 @@ export default function PacBoxGame({ onClose }) {
   const [lives, setLives] = useState(3);
   const [level, setLevel] = useState(1);
 
+  // --- MAPA ---
   const MAP = useMemo(
     () => [
       "#####################",
@@ -54,9 +55,9 @@ export default function PacBoxGame({ onClose }) {
     for (let y = 0; y < ROWS; y++)
       for (let x = 0; x < COLS; x++)
         if (MAP[y][x] === "G") arr.push({ x, y });
-
-    // Jeżeli na mapie jest tylko 1 G, dorób do 4 duchów (w sąsiednich polach nie-będących ścianą)
-    if (arr.length === 1) {
+    if (arr.length === 0) arr.push({ x: (COLS / 2) | 0, y: (ROWS / 2) | 0 });
+    // Dobicie do 4 duchów obok generatora (jeśli trzeba)
+    while (arr.length < 4) {
       const g = arr[0];
       const cand = [
         { x: g.x + 1, y: g.y },
@@ -67,12 +68,14 @@ export default function PacBoxGame({ onClose }) {
         ({ x, y }) =>
           x >= 0 && y >= 0 && x < COLS && y < ROWS && MAP[y][x] !== "#"
       );
-      for (const c of cand)
+      for (const c of cand) {
         if (!arr.find((a) => a.x === c.x && a.y === c.y)) arr.push(c);
+        if (arr.length >= 4) break;
+      }
+      if (cand.length === 0) break;
     }
-    if (arr.length === 0) arr.push({ x: (COLS / 2) | 0, y: (ROWS / 2) | 0 });
     return arr.slice(0, 4);
-  }, [MAP]);
+  }, [MAP, COLS, ROWS]);
 
   const stateRef = useRef(null);
 
@@ -80,7 +83,7 @@ export default function PacBoxGame({ onClose }) {
     x < 0 || y < 0 || x >= COLS || y >= ROWS ? true : MAP[y][x] === "#";
   const isPower = (x, y) => MAP[y][x] === "o";
 
-  // Inicjalizacja gry
+  // --- INIT ---
   useEffect(() => {
     const dots = new Set();
     for (let y = 0; y < ROWS; y++)
@@ -104,7 +107,6 @@ export default function PacBoxGame({ onClose }) {
       },
       ghosts,
       dots,
-      last: performance.now(),
     };
 
     setScore(0);
@@ -112,7 +114,7 @@ export default function PacBoxGame({ onClose }) {
     setLevel(1);
     setRunning(true);
 
-    // Fokus na obszar gry (dla strzałek). Kliknięcie też ustawia fokus.
+    // Fokus na obszar gry, żeby strzałki działały
     const giveFocus = () => {
       try {
         focusRef.current?.focus();
@@ -121,62 +123,81 @@ export default function PacBoxGame({ onClose }) {
     setTimeout(giveFocus, 0);
     wrapRef.current?.addEventListener("pointerdown", giveFocus);
     return () => wrapRef.current?.removeEventListener("pointerdown", giveFocus);
-  }, [ROWS, COLS, MAP, startPac, startGhosts]);
+  }, [MAP, ROWS, COLS, startPac, startGhosts]);
 
-  // Klawiatura (globalnie)
+  // --- STEROWANIE ---
   useEffect(() => {
     const onKey = (e) => {
       const s = stateRef.current;
       if (!s) return;
-      if (e.key === "ArrowLeft") {
-        s.pac.next = { x: -1, y: 0 };
-        e.preventDefault();
-      } else if (e.key === "ArrowRight") {
-        s.pac.next = { x: 1, y: 0 };
-        e.preventDefault();
-      } else if (e.key === "ArrowUp") {
-        s.pac.next = { x: 0, y: -1 };
-        e.preventDefault();
-      } else if (e.key === "ArrowDown") {
-        s.pac.next = { x: 0, y: 1 };
-        e.preventDefault();
-      } else if (e.key === " ") {
-        setRunning((r) => !r);
-        e.preventDefault();
-      } else if (e.key === "Escape") {
-        onClose?.();
-        e.preventDefault();
+      switch (e.key) {
+        case "ArrowLeft":
+          s.pac.next = { x: -1, y: 0 };
+          e.preventDefault();
+          break;
+        case "ArrowRight":
+          s.pac.next = { x: 1, y: 0 };
+          e.preventDefault();
+          break;
+        case "ArrowUp":
+          s.pac.next = { x: 0, y: -1 };
+          e.preventDefault();
+          break;
+        case "ArrowDown":
+          s.pac.next = { x: 0, y: 1 };
+          e.preventDefault();
+          break;
+        case " ":
+          setRunning((r) => !r);
+          e.preventDefault();
+          break;
+        case "Escape":
+          onClose?.();
+          e.preventDefault();
+          break;
       }
     };
-    window.addEventListener("keydown", onKey, { passive: false });
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, { passive: false });
+    return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Pętla gry (odporna na wyjątki)
+  // --- PĘTLA (fixed-step) ---
   useEffect(() => {
     let raf;
+    let prev = 0;
+    let acc = 0;
+    const STEP = 1 / 60; // 60 Hz
     const ctx = canvasRef.current?.getContext("2d");
-    function frame() {
+
+    const tick = (ts) => {
       try {
-        const s = stateRef.current;
-        if (!s || !ctx) {
-          raf = requestAnimationFrame(frame);
+        if (!ctx) {
+          raf = requestAnimationFrame(tick);
           return;
         }
-        const now = performance.now();
-        const dt = Math.min(0.05, (now - s.last) / 1000);
-        s.last = now;
-        if (running) update(s, dt);
-        render(ctx, s);
-      } catch (err) {
-        console.error("PacBox frame error", err);
+        if (!prev) prev = ts;
+        let dt = (ts - prev) / 1000;
+        if (dt > 0.25) dt = 0.25; // zabezpieczenie
+        prev = ts;
+        acc += dt;
+
+        while (acc >= STEP) {
+          if (running) update(stateRef.current, STEP);
+          acc -= STEP;
+        }
+        render(ctx, stateRef.current);
+      } catch (e) {
+        // cicho loguj w prod
+        // console.error("PacBox loop error", e);
       }
-      raf = requestAnimationFrame(frame);
-    }
-    raf = requestAnimationFrame(frame);
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [running]);
 
+  // --- LOGIKA ---
   function align(ent) {
     const cx = Math.round(ent.x - 0.5) + 0.5;
     const cy = Math.round(ent.y - 0.5) + 0.5;
@@ -189,6 +210,7 @@ export default function PacBoxGame({ onClose }) {
   }
 
   function update(s, dt) {
+    if (!s) return;
     const p = s.pac;
 
     // zmiana kierunku na środku kafla
@@ -201,10 +223,10 @@ export default function PacBoxGame({ onClose }) {
     // ruch pac-mana
     const tx = Math.round(p.x - 0.5) + p.dir.x;
     const ty = Math.round(p.y - 0.5) + p.dir.y;
-    const speed = 7 * dt; // kafelków/sek.
+    const SPEED_P = 7; // tiles/s
     if (!isWall(tx, ty)) {
-      p.x += p.dir.x * speed;
-      p.y += p.dir.y * speed;
+      p.x += p.dir.x * SPEED_P * dt;
+      p.y += p.dir.y * SPEED_P * dt;
     } else {
       align(p);
     }
@@ -219,8 +241,9 @@ export default function PacBoxGame({ onClose }) {
         setScore((sc) => sc + 50);
         s.ghosts.forEach((g) => (g.frightened = 6));
       } else setScore((sc) => sc + 10);
+
+      // poziom ukończony
       if (s.dots.size === 0) {
-        // nowy poziom
         setLevel((l) => l + 1);
         for (let y = 0; y < ROWS; y++)
           for (let x = 0; x < COLS; x++)
@@ -244,7 +267,7 @@ export default function PacBoxGame({ onClose }) {
     s.ghosts.forEach((g) => {
       if (g.frightened > 0) g.frightened -= dt;
       const centered = align(g);
-      const speedG = (g.frightened > 0 ? 5 : 6) * dt;
+      const SPEED_G = g.frightened > 0 ? 5 : 6;
       if (centered) {
         const dirs = [
           { x: 1, y: 0 },
@@ -257,7 +280,6 @@ export default function PacBoxGame({ onClose }) {
             !isWall(Math.round(g.x - 0.5) + d.x, Math.round(g.y - 0.5) + d.y)
         );
         if (options.length) {
-          // proste AI: do Pac-Mana (albo od niego gdy przestraszone)
           options.sort((a, b) => {
             const da =
               Math.abs(g.x + a.x - p.x) + Math.abs(g.y + a.y - p.y);
@@ -271,8 +293,8 @@ export default function PacBoxGame({ onClose }) {
       const nx = Math.round(g.x - 0.5) + g.dir.x;
       const ny = Math.round(g.y - 0.5) + g.dir.y;
       if (!isWall(nx, ny)) {
-        g.x += g.dir.x * speedG;
-        g.y += g.dir.y * speedG;
+        g.x += g.dir.x * SPEED_G * dt;
+        g.y += g.dir.y * SPEED_G * dt;
       }
     });
 
@@ -320,17 +342,20 @@ export default function PacBoxGame({ onClose }) {
     }
   }
 
+  // --- RENDER ---
   function render(ctx, s) {
     const wrap = wrapRef.current;
-    if (!wrap) return;
-    const scale = Math.min(
-      (wrap.clientWidth - 16) / W,
-      (wrap.clientHeight - 120) / H,
-      2
+    if (!wrap || !s) return;
+    const scale = Math.max(
+      0.5,
+      Math.min((wrap.clientWidth - 16) / W, (wrap.clientHeight - 140) / H, 2)
     );
     const cw = Math.max(1, Math.floor(W * scale));
     const ch = Math.max(1, Math.floor(H * scale));
-    if (canvasRef.current.width !== cw || canvasRef.current.height !== ch) {
+    if (
+      canvasRef.current.width !== cw ||
+      canvasRef.current.height !== ch
+    ) {
       canvasRef.current.width = cw;
       canvasRef.current.height = ch;
     }
@@ -393,7 +418,12 @@ export default function PacBoxGame({ onClose }) {
   }
 
   return (
-    <div ref={wrapRef} className="w-full h-full flex flex-col">
+    <div
+      ref={wrapRef}
+      className="w-full h-full flex flex-col"
+      role="application"
+      aria-label="Pac-BOX"
+    >
       <div className="flex items-center justify-between p-3 border-b border-gray-800">
         <div className="flex items-center gap-3 text-sm">
           <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">
