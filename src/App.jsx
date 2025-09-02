@@ -2,19 +2,20 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X } from "lucide-react";
 
-// BOXTOX PLAYER — Public Auth + Add-to-Playlist from search + Delete playlist/items
-// - Każdy może się zarejestrować (Supabase Email/Password)
+// BOXTOX PLAYER — Public Auth + Add-to-Playlist from search + Delete playlist/items + Favorite toggle + z-index fix
+// - Rejestracja/logowanie: każdy użytkownik (Supabase Email/Password)
 // - Goście: LocalStorage
-// - Wyszukiwanie YT przez Netlify Function /.netlify/functions/youtube-search (klucz po stronie serwera)
+// - Wyszukiwanie YT: Netlify Function /.netlify/functions/youtube-search (klucz na serwerze)
 // - NOWE:
-//   • W wynikach wyszukiwania przycisk "Dodaj do playlisty" z rozwijaną listą + "Nowa playlista" (prompt dla nazwy)
-//   • Usuwanie całej playlisty (z potwierdzeniem)
-//   • Usuwanie elementu z playlisty (mobile: przycisk w wierszu; desktop: X na karcie)
-//   • Mobile view playlisty: lista bez miniaturek; desktop: karty
+//   • Toggle Ulubione (dodaj/usuń) + przycisk usuwania w sekcji Ulubione
+//   • "Dodaj do playlisty" w wynikach: poprawione nakładanie (z-index) + brak przycinania — usunięto overflow z karty
+//   • Usuwanie elementów i całych playlist (z potwierdzeniem)
+//   • Mobile playlist view: lista bez miniaturek; desktop: karty
+// - EQ/Bass Boost: patrz komentarz w pliku (YouTube iFrame nie pozwala na WebAudio — można dodać dla lokalnych plików w osobnym module)
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-const LS_GUEST_KEY = "boxtox.guest.publicauth.v2";
+const LS_GUEST_KEY = "boxtox.guest.publicauth.v3";
 
 function useSupabase() {
   const enabled = !!(SUPABASE_URL && SUPABASE_ANON);
@@ -83,46 +84,18 @@ function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut
   );
 }
 
-function AddToPlaylistMenu({ playlists, onCreate, onAdd }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button onClick={(e)=>{e.stopPropagation(); setOpen((o)=>!o);}} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
-        Dodaj do playlisty <ChevronDown size={16} className="opacity-80"/>
-      </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-20" onClick={(e)=>e.stopPropagation()}>
-          <button className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg" onClick={()=>{ const name = prompt("Nazwa nowej playlisty"); if(name){ onCreate(name).then((newId)=>{ if(newId) onAdd(newId); }); }}}>
-            <Plus size={16}/> Nowa playlista
-          </button>
-          <div className="max-h-56 overflow-auto py-1">
-            {playlists.length===0 ? (
-              <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
-            ) : (
-              playlists.map(pl => (
-                <button key={pl.id} className="w-full text-left px-3 py-2 hover:bg-gray-800" onClick={()=>{ onAdd(pl.id); setOpen(false); }}>
-                  {pl.name}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function VideoCard({ video, onClick, isActive, onFav, isFavorite, playlists, onCreatePlaylist, onAddToPlaylist, playlistIdContext, onRemoveFromPlaylist }) {
+function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlists, onCreatePlaylist, onAddToPlaylist, playlistIdContext, onRemoveFromPlaylist }) {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <div className={`relative rounded-lg border border-gray-700 overflow-hidden bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive?"ring-2 ring-red-600/60":""}`} onClick={()=>onClick(video)}>
+    <div className={`relative rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive?"ring-2 ring-red-600/60":""}`} onClick={()=>onClick(video)}>
       {/* Remove from playlist (desktop) */}
       {playlistIdContext && onRemoveFromPlaylist && (
-        <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700">
+        <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40">
           <X size={14} />
         </button>
       )}
-      <div className="relative group">
+      {/* Thumbnail wrapper keeps rounding & clipping */}
+      <div className="relative group overflow-hidden rounded-t-lg">
         <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover"/>
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors grid place-items-center">
           <div className="w-16 h-16 rounded-full bg-white/90 grid place-items-center shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
@@ -133,9 +106,9 @@ function VideoCard({ video, onClick, isActive, onFav, isFavorite, playlists, onC
       <div className="p-4">
         <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
         <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
-        <div className="mt-3 flex items-center gap-2">
-          <button onClick={(e)=>{ e.stopPropagation(); onFav(video); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
-            <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"W ulubionych":"Ulubione"}
+        <div className="mt-3 flex items-center gap-2 relative">
+          <button onClick={(e)=>{ e.stopPropagation(); onFavToggle(video, isFavorite); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
+            <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"Usuń z ulubionych":"Ulubione"}
           </button>
           {onAddToPlaylist && (
             <div className="relative" onClick={(e)=>e.stopPropagation()}>
@@ -143,12 +116,12 @@ function VideoCard({ video, onClick, isActive, onFav, isFavorite, playlists, onC
                 Dodaj do playlisty <ChevronDown size={16} className="opacity-80"/>
               </button>
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-20">
+                <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-50">
                   <button className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg" onClick={async()=>{ const name = prompt("Nazwa nowej playlisty"); if(name){ const id = await onCreatePlaylist(name); if(id){ await onAddToPlaylist(id, video); setMenuOpen(false);} } }}>
                     <Plus size={16}/> Nowa playlista
                   </button>
                   <div className="max-h-56 overflow-auto py-1">
-                    {playlists.length===0 ? (
+                    {(!playlists||playlists.length===0) ? (
                       <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
                     ) : (
                       playlists.map(pl => (
@@ -240,15 +213,28 @@ export default function App(){
 
   function toVideoMinimal(v){ return { video_id: v.video_id, title: v.title, channel_title: v.channel_title, thumbnail_url: v.thumbnail_url }; }
 
-  async function addToFavorites(video){
+  async function toggleFavorite(video, currentlyFavorite){
     const v = toVideoMinimal(video);
     if(isCloud){
-      const { error } = await supabase.from("favorites").upsert(v);
-      if(error) return alert("Nie udało się dodać do Ulubionych (Supabase).");
-      setFavorites(prev=> prev.find(x=>x.video_id===v.video_id)?prev:[v,...prev]);
+      if(currentlyFavorite){
+        const { error } = await supabase.from("favorites").delete().eq("video_id", v.video_id);
+        if(error) return alert("Nie udało się usunąć z Ulubionych (Supabase).");
+        setFavorites(prev=> prev.filter(x=>x.video_id!==v.video_id));
+      } else {
+        const { error } = await supabase.from("favorites").upsert(v);
+        if(error) return alert("Nie udało się dodać do Ulubionych (Supabase).");
+        setFavorites(prev=> prev.find(x=>x.video_id===v.video_id)?prev:[v,...prev]);
+      }
     } else {
-      setGuestStore(prev=>{ const exists = prev.favorites.find(x=>x.video_id===v.video_id); const favs = exists?prev.favorites:[v,...prev.favorites]; return { ...prev, favorites: favs }; });
-      setFavorites(prev=> prev.find(x=>x.video_id===v.video_id)?prev:[v,...prev]);
+      setGuestStore(prev=>{
+        const exists = prev.favorites.find(x=>x.video_id===v.video_id);
+        const favs = exists? prev.favorites.filter(x=>x.video_id!==v.video_id) : [v, ...prev.favorites];
+        return { ...prev, favorites: favs };
+      });
+      setFavorites(prev=>{
+        const exists = prev.find(x=>x.video_id===v.video_id);
+        return exists? prev.filter(x=>x.video_id!==v.video_id) : [v, ...prev];
+      });
     }
   }
 
@@ -356,9 +342,12 @@ export default function App(){
                 <div className="text-sm text-gray-400 flex items-center gap-2"><Heart size={16}/> Brak ulubionych.</div>
               ) : (
                 favorites.map(v=> (
-                  <div key={v.video_id} className="flex gap-3 items-center cursor-pointer" onClick={()=>setActive(v)}>
-                    <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700 hidden md:block"/>
-                    <div className="text-sm text-white/90 line-clamp-2">{v.title}</div>
+                  <div key={v.video_id} className="flex gap-3 items-center">
+                    <button className="flex-1 flex items-center gap-3 text-left" onClick={()=>setActive(v)}>
+                      <img src={v.thumbnail_url} className="w-20 h-12 rounded-md object-cover border border-gray-700 hidden md:block"/>
+                      <div className="text-sm text-white/90 line-clamp-2">{v.title}</div>
+                    </button>
+                    <button title="Usuń z ulubionych" onClick={()=>toggleFavorite(v, true)} className="p-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700"><Trash2 size={14}/></button>
                   </div>
                 ))
               )}
@@ -397,7 +386,7 @@ export default function App(){
                   <div className="text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16}/> Ta playlista jest pusta.</div>
                 ) : (
                   playlistItems.map((v)=> (
-                    <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFav={addToFavorites} isFavorite={favoriteIds.has(v.video_id)} playlistIdContext={selectedPlaylistId} onRemoveFromPlaylist={removeFromPlaylist}/>
+                    <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlistIdContext={selectedPlaylistId} onRemoveFromPlaylist={removeFromPlaylist}/>
                   ))
                 )}
               </div>
@@ -411,7 +400,7 @@ export default function App(){
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {results.map((v)=> (
-                  <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFav={addToFavorites} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
+                  <VideoCard key={v.video_id} video={v} onClick={setActive} isActive={active?.video_id===v.video_id} onFavToggle={toggleFavorite} isFavorite={favoriteIds.has(v.video_id)} playlists={playlists} onCreatePlaylist={createPlaylist} onAddToPlaylist={async(id, video)=>{ await addToPlaylist(id, video); }} />
                 ))}
                 {results.length===0 && (
                   <div className="w-full py-10 grid place-items-center text-gray-400">
@@ -447,6 +436,17 @@ export default function App(){
           </div>
         </div>
       )}
+
+      {/*
+      ======================================
+      O EQ / Bass Boost:
+      ======================================
+      Dźwięk z YouTube odtwarzany przez <iframe> nie jest dostępny dla WebAudio API (CORS / sandbox),
+      więc w przeglądarce nie można legalnie i technicznie nakładać filtrów (EQ, bass boost) na audio z YT.
+      Możemy dodać EQ/BassBoost dla lokalnych plików audio (np. mp3) odtwarzanych przez <audio> z crossOrigin="anonymous"
+      lub przez własny hosting (np. Supabase Storage) — wtedy łańcuch: MediaElementAudioSourceNode -> BiquadFilterNode (peaking/low-shelf) -> GainNode.
+      Jeśli chcesz, przygotuję moduł "Local Tracks" z uploadem do Supabase Storage + prostym 5‑pasmowym EQ i Bass Boost.
+      */}
     </div>
   );
 }
