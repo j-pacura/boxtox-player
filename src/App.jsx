@@ -82,68 +82,124 @@ function Header({ onSearch, query, setQuery, onOpenAccount, userEmail, onSignOut
   );
 }
 
-function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlists, onCreatePlaylist, onAddToPlaylist, playlistIdContext, onRemoveFromPlaylist }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+function VideoCard({
+  video,
+  onClick,
+  isActive,
+  onFavToggle,
+  isFavorite,
+  playlists,
+  onCreatePlaylist,
+  onAddToPlaylist,
+  playlistIdContext,
+  onRemoveFromPlaylist,
+}) {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+
   return (
-    <div className={`relative rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive?"ring-2 ring-red-600/60":""}`} onClick={()=>onClick(video)}>
+    // FIX #1: DAJEMY `relative` + gdy menu otwarte, podbijamy warstwę `z-20`.
+    //         NIE używamy tutaj `overflow-hidden` (to by ucinało dropdown).
+    <div
+      className={`relative ${menuOpen ? "z-20" : ""} rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors cursor-pointer ${isActive ? "ring-2 ring-red-600/60" : ""}`}
+      onClick={() => onClick(video)}
+    >
+      {/* przycisk X dla trybu "element w playliście" */}
       {playlistIdContext && onRemoveFromPlaylist && (
-        <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40">
+        <button
+          title="Usuń z playlisty"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemoveFromPlaylist(playlistIdContext, video.video_id);
+          }}
+          className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40"
+        >
           <X size={14} />
         </button>
       )}
+
+      {/* FIX #2: `overflow-hidden` tylko na WRAPPERZE MINIATURY, żeby zachować zaokrąglenia,
+                 ale nie ucinać dropdownu poniżej */}
       <div className="relative group overflow-hidden rounded-t-lg">
-        <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover"/>
+        <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover" />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors grid place-items-center">
           <div className="w-16 h-16 rounded-full bg-white/90 grid place-items-center shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
-            <Play className="text-gray-900" size={28}/>
+            <Play className="text-gray-900" size={28} />
           </div>
         </div>
       </div>
+
       <div className="p-4">
         <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
         <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
-        <div className="mt-3 flex items-center gap-2 relative">
-          <button onClick={(e)=>{ e.stopPropagation(); onFavToggle(video, isFavorite); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
-            <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"Usuń z ulubionych":"Ulubione"}
+
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={(e) => { e.stopPropagation(); onFavToggle(video, isFavorite); }}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
+          >
+            <Heart size={16} className={isFavorite ? "text-red-500 fill-red-500" : "text-gray-400"} />
+            {isFavorite ? "Usuń z ulubionych" : "Ulubione"}
           </button>
-          {onAddToPlaylist && (
-            <div className="relative" onClick={(e)=>e.stopPropagation()}>
-              <button onClick={()=>setMenuOpen((o)=>!o)} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
-                Dodaj do playlisty <ChevronDown size={16} className="opacity-80"/>
-              </button>
-              {menuOpen && (
-                <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-50">
-                  <button className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg" onClick={async()=>{ const name = prompt("Nazwa nowej playlisty"); if(name){ const id = await onCreatePlaylist(name); if(id){ await onAddToPlaylist(id, video); setMenuOpen(false);} } }}>
-                    <Plus size={16}/> Nowa playlista
-                  </button>
-                  <div className="max-h-56 overflow-auto py-1">
-                    {(!playlists||playlists.length===0) ? (
-                      <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
-                    ) : (
-                      playlists.map(pl => (
-                        <button key={pl.id} className="w-full text-left px-3 py-2 hover:bg-gray-800" onClick={async()=>{ await onAddToPlaylist(pl.id, video); setMenuOpen(false); }}>
-                          {pl.name}
-                        </button>
-                      ))
-                    )}
-                  </div>
+
+          {/* FIX #3: dropdown ma własny stacking: `z-[100]`, a rodzic sekcji ma `relative`.
+                     Dodatkowo `onClick={(e)=>e.stopPropagation()}` – klik w menu nie zamknie karty. */}
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setMenuOpen((o) => !o)}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm"
+            >
+              Dodaj do playlisty <ChevronDown size={16} className="opacity-80" />
+            </button>
+
+            {menuOpen && (
+              <div className="absolute right-0 mt-2 w-60 rounded-lg border border-gray-700 bg-gray-900 shadow-xl z-[100]">
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-t-lg"
+                  onClick={async () => {
+                    const name = prompt("Nazwa nowej playlisty");
+                    if (name) {
+                      const id = await onCreatePlaylist(name);
+                      if (id) { await onAddToPlaylist(id, video); setMenuOpen(false); }
+                    }
+                  }}
+                >
+                  <Plus size={16} /> Nowa playlista
+                </button>
+
+                <div className="max-h-56 overflow-auto py-1">
+                  {!playlists || playlists.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-gray-400">Brak playlist</div>
+                  ) : (
+                    playlists.map((pl) => (
+                      <button
+                        key={pl.id}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-800"
+                        onClick={async () => { await onAddToPlaylist(pl.id, video); setMenuOpen(false); }}
+                      >
+                        {pl.name}
+                      </button>
+                    ))
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function Player({ videoId, onEnded }) {
-  const containerRef = useRef(null);
-  const playerRef = useRef(null);
-  const [apiReady, setApiReady] = useState(false);
+// --- Player.jsx (wewnątrz App.jsx) ---
+function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
+  const containerRef = React.useRef(null);
+  const playerRef = React.useRef(null);
+  const [apiReady, setApiReady] = React.useState(false);
 
-  useEffect(() => {
+  // 1) Załaduj YouTube IFrame API raz
+  React.useEffect(() => {
     let mounted = true;
+
     function ensureYT() {
       return new Promise((resolve) => {
         if (window.YT && window.YT.Player) return resolve(window.YT);
@@ -154,60 +210,97 @@ function Player({ videoId, onEnded }) {
           document.body.appendChild(tag);
         }
         const check = () => {
-          if (window.YT && window.YT.Player) resolve(window.YT); else setTimeout(check, 50);
+          if (window.YT && window.YT.Player) resolve(window.YT);
+          else setTimeout(check, 50);
         };
         check();
       });
     }
+
     (async () => {
       await ensureYT();
       if (!mounted) return;
       setApiReady(true);
     })();
+
     return () => { mounted = false; };
   }, []);
 
-  useEffect(() => {
-    if (!apiReady || !containerRef.current) return;
-    // Destroy previous instance
-    if (playerRef.current) { try { playerRef.current.destroy(); } catch {} playerRef.current = null; }
+  // 2) Utwórz player tylko raz, gdy API gotowe
+  React.useEffect(() => {
+    if (!apiReady || !containerRef.current || playerRef.current) return;
 
     try {
       playerRef.current = new window.YT.Player(containerRef.current, {
         width: '100%',
         height: '100%',
-        videoId: videoId || undefined,
         playerVars: {
-          autoplay: 1,
           rel: 0,
           modestbranding: 1,
+          // autoplay sterujemy niżej, w zależności od userInteracted
+          playsinline: 1,
           origin: window.location.origin,
         },
         events: {
           onReady: (e) => {
-            if (videoId) e.target.playVideo();
+            // jeśli od razu mamy videoId i użytkownik kliknął wcześniej, odtwarzamy
+            if (videoId && userInteracted) {
+              try { e.target.loadVideoById(videoId); e.target.playVideo(); } catch {}
+            } else if (videoId) {
+              try { e.target.cueVideoById(videoId); } catch {}
+            }
           },
           onStateChange: (e) => {
-            // 0 = ENDED
             if (e?.data === window.YT.PlayerState.ENDED) {
               onEnded && onEnded();
             }
           },
         },
       });
-    } catch (e) {
-      // Silent fallback: leave empty area
-    }
-    // cleanup on unmount handled above when re-creating
-  }, [apiReady, videoId]);
+    } catch {}
+  }, [apiReady, videoId, userInteracted, onEnded]);
+
+  // 3) Reaguj na zmianę videoId / userInteracted
+  React.useEffect(() => {
+    const p = playerRef.current;
+    if (!apiReady || !p || !videoId) return;
+
+    try {
+      if (userInteracted) {
+        p.loadVideoById(videoId);
+        p.playVideo();
+      } else {
+        // bez gestu użytkownika nie próbujemy autoplay – cue + overlay
+        p.cueVideoById(videoId);
+      }
+    } catch {}
+  }, [apiReady, videoId, userInteracted]);
+
+  // 4) Overlay „Kliknij, aby odtworzyć” – gdy brakuje gestu
+  function playAfterUserGesture() {
+    const p = playerRef.current;
+    onRequireInteract && onRequireInteract();
+    setTimeout(() => { try { p && p.playVideo(); } catch {} }, 0);
+  }
 
   return (
-    <div className="w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
-      {/* Container for YT player */}
+    <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-gray-900">
       <div ref={containerRef} className="w-full h-full" />
+      {!userInteracted && videoId && (
+        <button
+          onClick={playAfterUserGesture}
+          className="absolute inset-0 flex items-center justify-center bg-black/40 hover:bg-black/30"
+          title="Kliknij, aby odtworzyć"
+        >
+          <span className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">
+            Kliknij, aby odtworzyć
+          </span>
+        </button>
+      )}
     </div>
   );
 }
+
 
 function SkeletonCard(){
   return (
@@ -226,7 +319,8 @@ export default function App(){
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(null);
-
+  // <-- NOWA linia: gest użytkownika (wymagany do autoplay)
+  const [userInteracted, setUserInteracted] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [authView, setAuthView] = useState("signin");
   const [activeTab, setActiveTab] = useState("browse");
@@ -365,16 +459,26 @@ export default function App(){
   }
 
   function clearQueue(){ setQueue([]); setQueueIndex(0); setQueueLabel(""); }
-  function startQueue(items, label){ if(!items||items.length===0) return; setQueue(items); setQueueIndex(0); setQueueLabel(label||""); setActive(items[0]); }
+  function startQueue(items, label) {
+  if (!items || items.length === 0) return;
+  setUserInteracted(true);                 // <--- DODANE
+  setQueue(items);
+  setQueueIndex(0);
+  setQueueLabel(label || "");
+  setActive(items[0]);
+}
   function nextInQueue(){ if(queue.length===0) return; const i = Math.min(queueIndex+1, queue.length-1); setQueueIndex(i); setActive(queue[i]); }
   function prevInQueue(){ if(queue.length===0) return; const i = Math.max(queueIndex-1, 0); setQueueIndex(i); setActive(queue[i]); }
   function onEnded(){ if(autoNext && queue.length>0 && queueIndex < queue.length-1){ nextInQueue(); } }
 
-  function handleSelect(video){
-    // klik ręczny: ustaw aktywny; jeśli element jest w kolejce – zsynchronizuj indeks; jeśli nie – nie zmieniaj kolejki
-    setActive(video);
-    if(queue.length>0){ const idx = queue.findIndex(v=>v.video_id===video.video_id); if(idx>=0) setQueueIndex(idx); }
+  function handleSelect(video) {
+  setUserInteracted(true);                 // <--- DODANE
+  setActive(video);
+  if (queue.length > 0) {
+    const idx = queue.findIndex(v => v.video_id === video.video_id);
+    if (idx >= 0) setQueueIndex(idx);
   }
+}
 
   const favoriteIds = new Set(favorites.map(f=>f.video_id));
 
@@ -433,7 +537,12 @@ export default function App(){
         <section className="col-span-12 lg:col-span-8 flex flex-col gap-4">
           {/* Player + transport controls */}
           <div className="space-y-3">
-            <Player videoId={active?.video_id} onEnded={onEnded}/>
+            <Player
+              videoId={active?.video_id}
+              onEnded={onEnded}
+              userInteracted={userInteracted}
+              onRequireInteract={() => setUserInteracted(true)}
+            />
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <button onClick={prevInQueue} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><SkipBack size={16}/> Poprzedni</button>
