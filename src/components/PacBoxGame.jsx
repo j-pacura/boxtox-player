@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 
-// Prosta gra w stylu Pac-Man (Pac-BOX) na <canvas>
-// Sterowanie: strzałki, Spacja (pauza), Esc (zamknij). Na mobile są przyciski kierunkowe.
-
+// Pac-BOX: poprawiona wersja (sterowanie + duchy + odporność na błędy)
 export default function PacBoxGame({ onClose }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -56,8 +54,24 @@ export default function PacBoxGame({ onClose }) {
     for (let y = 0; y < ROWS; y++)
       for (let x = 0; x < COLS; x++)
         if (MAP[y][x] === "G") arr.push({ x, y });
+
+    // Jeżeli na mapie jest tylko 1 G, dorób do 4 duchów (w sąsiednich polach nie-będących ścianą)
+    if (arr.length === 1) {
+      const g = arr[0];
+      const cand = [
+        { x: g.x + 1, y: g.y },
+        { x: g.x - 1, y: g.y },
+        { x: g.x, y: g.y + 1 },
+        { x: g.x, y: g.y - 1 },
+      ].filter(
+        ({ x, y }) =>
+          x >= 0 && y >= 0 && x < COLS && y < ROWS && MAP[y][x] !== "#"
+      );
+      for (const c of cand)
+        if (!arr.find((a) => a.x === c.x && a.y === c.y)) arr.push(c);
+    }
     if (arr.length === 0) arr.push({ x: (COLS / 2) | 0, y: (ROWS / 2) | 0 });
-    return arr;
+    return arr.slice(0, 4);
   }, [MAP]);
 
   const stateRef = useRef(null);
@@ -66,7 +80,7 @@ export default function PacBoxGame({ onClose }) {
     x < 0 || y < 0 || x >= COLS || y >= ROWS ? true : MAP[y][x] === "#";
   const isPower = (x, y) => MAP[y][x] === "o";
 
-  // Inicjalizacja
+  // Inicjalizacja gry
   useEffect(() => {
     const dots = new Set();
     for (let y = 0; y < ROWS; y++)
@@ -98,15 +112,18 @@ export default function PacBoxGame({ onClose }) {
     setLevel(1);
     setRunning(true);
 
-    // Fokus na wrapper, żeby strzałki działały od razu
-    setTimeout(() => {
+    // Fokus na obszar gry (dla strzałek). Kliknięcie też ustawia fokus.
+    const giveFocus = () => {
       try {
         focusRef.current?.focus();
       } catch {}
-    }, 0);
+    };
+    setTimeout(giveFocus, 0);
+    wrapRef.current?.addEventListener("pointerdown", giveFocus);
+    return () => wrapRef.current?.removeEventListener("pointerdown", giveFocus);
   }, [ROWS, COLS, MAP, startPac, startGhosts]);
 
-  // Sterowanie — klawiatura (globalnie)
+  // Klawiatura (globalnie)
   useEffect(() => {
     const onKey = (e) => {
       const s = stateRef.current;
@@ -135,21 +152,25 @@ export default function PacBoxGame({ onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Pętla gry
+  // Pętla gry (odporna na wyjątki)
   useEffect(() => {
     let raf;
     const ctx = canvasRef.current?.getContext("2d");
     function frame() {
-      const s = stateRef.current;
-      if (!s || !ctx) {
-        raf = requestAnimationFrame(frame);
-        return;
+      try {
+        const s = stateRef.current;
+        if (!s || !ctx) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        const now = performance.now();
+        const dt = Math.min(0.05, (now - s.last) / 1000);
+        s.last = now;
+        if (running) update(s, dt);
+        render(ctx, s);
+      } catch (err) {
+        console.error("PacBox frame error", err);
       }
-      const now = performance.now();
-      const dt = Math.min(0.05, (now - s.last) / 1000);
-      s.last = now;
-      if (running) update(s, dt);
-      render(ctx, s);
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
@@ -194,8 +215,10 @@ export default function PacBoxGame({ onClose }) {
     const key = `${cx},${cy}`;
     if (s.dots.has(key)) {
       s.dots.delete(key);
-      setScore((sc) => sc + (isPower(cx, cy) ? 50 : 10));
-      if (isPower(cx, cy)) s.ghosts.forEach((g) => (g.frightened = 6)); // 6s
+      if (isPower(cx, cy)) {
+        setScore((sc) => sc + 50);
+        s.ghosts.forEach((g) => (g.frightened = 6));
+      } else setScore((sc) => sc + 10);
       if (s.dots.size === 0) {
         // nowy poziom
         setLevel((l) => l + 1);
@@ -230,14 +253,17 @@ export default function PacBoxGame({ onClose }) {
           { x: 0, y: -1 },
         ].filter((d) => !(d.x === -g.dir.x && d.y === -g.dir.y));
         const options = dirs.filter(
-          (d) => !isWall(Math.round(g.x - 0.5) + d.x, Math.round(g.y - 0.5) + d.y)
+          (d) =>
+            !isWall(Math.round(g.x - 0.5) + d.x, Math.round(g.y - 0.5) + d.y)
         );
         if (options.length) {
-          // proste AI: z/od pac-mana według dystansu taksówkowego
+          // proste AI: do Pac-Mana (albo od niego gdy przestraszone)
           options.sort((a, b) => {
-            const ax = Math.abs(g.x + a.x - p.x) + Math.abs(g.y + a.y - p.y);
-            const bx = Math.abs(g.x + b.x - p.x) + Math.abs(g.y + b.y - p.y);
-            return (g.frightened <= 0 ? ax - bx : bx - ax);
+            const da =
+              Math.abs(g.x + a.x - p.x) + Math.abs(g.y + a.y - p.y);
+            const db =
+              Math.abs(g.x + b.x - p.x) + Math.abs(g.y + b.y - p.y);
+            return g.frightened <= 0 ? da - db : db - da;
           });
           g.dir = options[0];
         }
@@ -266,7 +292,6 @@ export default function PacBoxGame({ onClose }) {
           setLives((v) => {
             const nv = v - 1;
             if (nv <= 0) {
-              // reset gry
               s.dots.clear();
               for (let y = 0; y < ROWS; y++)
                 for (let x = 0; x < COLS; x++)
@@ -305,10 +330,7 @@ export default function PacBoxGame({ onClose }) {
     );
     const cw = Math.max(1, Math.floor(W * scale));
     const ch = Math.max(1, Math.floor(H * scale));
-    if (
-      canvasRef.current.width !== cw ||
-      canvasRef.current.height !== ch
-    ) {
+    if (canvasRef.current.width !== cw || canvasRef.current.height !== ch) {
       canvasRef.current.width = cw;
       canvasRef.current.height = ch;
     }
@@ -329,7 +351,12 @@ export default function PacBoxGame({ onClose }) {
           ctx.fillStyle = "#1f2937";
           ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
           ctx.strokeStyle = "#374151";
-          ctx.strokeRect(x * TILE + 0.5, y * TILE + 0.5, TILE - 1, TILE - 1);
+          ctx.strokeRect(
+            x * TILE + 0.5,
+            y * TILE + 0.5,
+            TILE - 1,
+            TILE - 1
+          );
         }
         const key = `${x},${y}`;
         if (s.dots.has(key)) {
