@@ -2,12 +2,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Search, Heart, Play, User, LogOut, ListVideo, Star, Film, ChevronDown, Trash2, Plus, X, SkipBack, SkipForward, Zap, Gamepad2 } from "lucide-react";
+import PacBoxGame from "./components/PacBoxGame.jsx";
 
-// BOXTOX PLAYER — Mini‑gra "Pac‑BOX" (Pac‑Man‑like) + Auto‑next + Paginacja wyników
-// - Dodany wysuwany panel "Gry" (prawy dół) z przyciskiem uruchomienia gry
-// - Gra w modalu: płynna animacja na <canvas>, sterowanie klawiaturą (←↑→↓) i dotykowe przyciski kierunkowe
-// - Działa mobil/desktop; pauza/wznowienie; restart; life/score/level
-// - Reszta aplikacji: YouTube search (paginacja „Pokaż więcej”), kolejka odtwarzania z auto‑następnym, playlisty i ulubione
+// BOXTOX PLAYER — App.jsx (aktualny)
+// - Player (YT IFrame API) z auto‑następnym
+// - Ulubione, Playlisty (Supabase lub LocalStorage)
+// - Wyszukiwarka YouTube z paginacją („Pokaż więcej” + auto‑doładowanie)
+// - Dropdown „Dodaj do playlisty” poprawiony (nie wychodzi poza kartę)
+// - FAB „Gra” → modal z Pac‑BOX (osobny komponent)
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
@@ -87,7 +89,7 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
       {playlistIdContext && onRemoveFromPlaylist && (
         <button title="Usuń z playlisty" onClick={(e)=>{ e.stopPropagation(); onRemoveFromPlaylist(playlistIdContext, video.video_id); }} className="absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 hover:bg-gray-900 border border-gray-700 z-40"><X size={14} /></button>
       )}
-      {/* Miniatura z zaokrągleniem */}
+      {/* overflow-hidden tylko na miniaturze — nie na całej karcie */}
       <div className="relative group overflow-hidden rounded-t-lg">
         <img src={video.thumbnail_url} alt={video.title} className="w-full aspect-video object-cover"/>
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors grid place-items-center">
@@ -97,7 +99,7 @@ function VideoCard({ video, onClick, isActive, onFavToggle, isFavorite, playlist
       <div className="p-4">
         <div className="font-semibold text-white line-clamp-2 leading-tight">{video.title}</div>
         <div className="text-sm text-gray-400 mt-1">{video.channel_title}</div>
-        {/* Akcje wyrównane do lewej, zawijane */}
+        {/* Akcje: w lewo, zawijane, dropdown otwierany od LEWEJ */}
         <div className="mt-3 flex flex-wrap items-center justify-start gap-2 relative">
           <button onClick={(e)=>{ e.stopPropagation(); onFavToggle(video, isFavorite); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">
             <Heart size={16} className={isFavorite?"text-red-500 fill-red-500":"text-gray-400"}/> {isFavorite?"Usuń z ulubionych":"Ulubione"}
@@ -133,6 +135,7 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
   const [apiReady, setApiReady] = useState(false);
   const lastEndedRef = useRef(0);
 
+  // Ładowanie IFrame API
   useEffect(() => {
     let mounted = true;
     function ensureYT() {
@@ -152,6 +155,7 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     return () => { mounted = false; };
   }, []);
 
+  // Tworzenie playera
   useEffect(() => {
     if (!apiReady || !containerRef.current || playerRef.current) return;
     try {
@@ -183,11 +187,13 @@ function Player({ videoId, onEnded, userInteracted, onRequireInteract }) {
     } catch {}
   }, [apiReady]);
 
+  // Zmiana videoId / userInteracted
   useEffect(() => {
     const p = playerRef.current; if (!apiReady || !p || !videoId) return;
     try { if (userInteracted) { p.loadVideoById(videoId); p.playVideo(); } else { p.cueVideoById(videoId); } } catch {}
   }, [apiReady, videoId, userInteracted]);
 
+  // Fallback blisko końca
   useEffect(() => {
     const p = playerRef.current; if (!p) return;
     const iv = setInterval(() => {
@@ -230,336 +236,6 @@ function SkeletonCard(){
   );
 }
 
-// ==========================
-// Pac‑BOX (mini gra Pac‑Man)
-// ==========================
-function PacBoxGame({ onClose }){
-  const canvasRef = useRef(null);
-  const wrapRef = useRef(null);
-  const [running, setRunning] = useState(true);
-  const [score, setScore] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [level, setLevel] = useState(1);
-
-  // Prosty poziom (21 x 19)
-  const MAP = useMemo(()=>[
-    "#####################",
-    "#.........#.........#",
-    "#.###.###.#.###.###.#",
-    "#o# #.# #.#.# #.# #o#",
-    "#.###.###.#.###.###.#",
-    "#...................#",
-    "#.###.#.#####.#.###.#",
-    "#.....#...#...#.....#",
-    "#####.### # ###.#####",
-    "    #.#   G   #.#    ",
-    "#####.# ## ## #.#####",
-    "#.........P.........#",
-    "#.###.###.#.###.###.#",
-    "#o..#..... .....#..o#",
-    "###.#.#.#####.#.#.###",
-    "#.....#...#...#.....#",
-    "#.########.#.########",
-    "#...................#",
-    "#####################",
-  ],[]);
-
-  const TILE = 22; // rozmiar kafelka
-  const ROWS = MAP.length, COLS = MAP[0].length;
-  const W = COLS * TILE, H = ROWS * TILE;
-
-  // Pozycje startowe
-  const startPac = useMemo(()=>{
-    for (let y=0;y<ROWS;y++){ for (let x=0;x<COLS;x++){ if (MAP[y][x]==='P') return {x,y}; }} return {x:1,y:1};
-  },[MAP]);
-  const startGhosts = useMemo(()=>{
-    const arr=[]; for (let y=0;y<ROWS;y++){ for (let x=0;x<COLS;x++){ if (MAP[y][x]==='G') arr.push({x,y}); }}
-    if(arr.length===0) arr.push({x: COLS/2|0, y: (ROWS/2|0)});
-    return arr;
-  },[MAP]);
-
-  const stateRef = useRef(null);
-
-  // Utility
-  const isWall = (x,y)=> (x<0||y<0||x>=COLS||y>=ROWS) ? true : MAP[y][x]==='#';
-  const isDot = (x,y)=> MAP[y][x]==='.';
-  const isPower = (x,y)=> MAP[y][x]==='o';
-
-  // Inicjalizacja stanu gry
-  useEffect(()=>{
-    const dots = new Set();
-    for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if (MAP[y][x]==='.'||MAP[y][x]==='o') dots.add(`${x},${y}`);
-
-    const ghosts = startGhosts.map((g,i)=>({
-      x: g.x + 0.5,
-      y: g.y + 0.5,
-      dir: {x: 0, y: -1},
-      color: ["#ef4444","#22d3ee","#f472b6","#f59e0b"][i%4],
-      frightened: 0,
-    }));
-
-    stateRef.current = {
-      pac: { x: startPac.x + 0.5, y: startPac.y + 0.5, dir: {x:1,y:0}, next: {x:1,y:0}, speed: 6/TILE },
-      ghosts,
-      dots,
-      powerTime: 0,
-      lastTime: performance.now(),
-    };
-    setScore(0); setLives(3); setLevel(1); setRunning(true);
-  },[]);
-
-  // Sterowanie
-  useEffect(()=>{
-    const onKey = (e)=>{
-      const s = stateRef.current; if (!s) return;
-      if (e.key==='ArrowLeft') s.pac.next={x:-1,y:0};
-      else if (e.key==='ArrowRight') s.pac.next={x:1,y:0};
-      else if (e.key==='ArrowUp') s.pac.next={x:0,y:-1};
-      else if (e.key==='ArrowDown') s.pac.next={x:0,y:1};
-      else if (e.key===' ') setRunning(r=>!r);
-      else if (e.key==='Escape') onClose?.();
-    };
-    window.addEventListener('keydown', onKey);
-    return ()=>window.removeEventListener('keydown', onKey);
-  },[onClose]);
-
-  // Pętla gry
-  useEffect(()=>{
-    let raf; const ctx = canvasRef.current?.getContext('2d');
-    function step(){
-      const s = stateRef.current; if (!s || !ctx) { raf=requestAnimationFrame(step); return; }
-      const now = performance.now(); const dt = Math.min(0.05, (now - s.lastTime)/1000); s.lastTime = now;
-      if (running) update(s, dt);
-      render(ctx, s);
-      raf = requestAnimationFrame(step);
-    }
-    raf = requestAnimationFrame(step);
-    return ()=> cancelAnimationFrame(raf);
-  },[running]);
-
-  function tileCenter(x){ return (x|0)+0.5; }
-
-  function canMove(s, x, y, dir){
-    const nx = x + dir.x*0.1, ny = y + dir.y*0.1; // lekki "look ahead"
-    const tx = Math.round(nx-0.5), ty = Math.round(ny-0.5);
-    return !isWall(tx,ty);
-  }
-
-  function alignIfPossible(s, ent){
-    const cx = Math.round(ent.x-0.5)+0.5, cy = Math.round(ent.y-0.5)+0.5;
-    if (Math.abs(ent.x - cx) < 0.1 && Math.abs(ent.y - cy) < 0.1){ ent.x = cx; ent.y = cy; return true; }
-    return false;
-  }
-
-  function update(s, dt){
-    // PACMAN
-    const p = s.pac; const speed = 7 * dt; // 7 tiles/sec
-    // zmiana kierunku tylko przy centru kafelka i gdy droga wolna
-    if (alignIfPossible(s, p)){
-      const testNext = { x: p.next.x, y: p.next.y };
-      const tx = Math.round(p.x-0.5)+testNext.x, ty = Math.round(p.y-0.5)+testNext.y;
-      if (!isWall(tx,ty)) p.dir = testNext;
-    }
-    // ruch jeśli można w bieżącym kierunku
-    const tx2 = Math.round(p.x-0.5)+p.dir.x, ty2 = Math.round(p.y-0.5)+p.dir.y;
-    if (!isWall(tx2,ty2)) { p.x += p.dir.x*speed; p.y += p.dir.y*speed; } else { alignIfPossible(s,p); }
-
-    // zjadanie kropek
-    const tpx = Math.round(p.x-0.5), tpy = Math.round(p.y-0.5);
-    const key = `${tpx},${tpy}`;
-    if (s.dots.has(key)){
-      s.dots.delete(key);
-      setScore(sc=>sc+ (isPower(tpx,tpy)?50:10));
-      if (isPower(tpx,tpy)){
-        s.ghosts.forEach(g=>g.frightened = 6); // 6s strachu
-      }
-      // wygrana poziomu
-      if (s.dots.size===0){
-        setLevel(l=>l+1);
-        // odtwórz kropki poza ścianami
-        for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if (MAP[y][x]==='.'||MAP[y][x]==='o') s.dots.add(`${x},${y}`);
-        // reset pozycji
-        p.x = startPac.x+0.5; p.y=startPac.y+0.5; p.dir={x:1,y:0}; p.next=p.dir;
-        s.ghosts.forEach((g,i)=>{ g.x=startGhosts[i%startGhosts.length].x+0.5; g.y=startGhosts[i%startGhosts.length].y+0.5; g.dir={x:0,y:-1}; g.frightened=0; });
-      }
-    }
-
-    // DUCHY
-    s.ghosts.forEach((g)=>{
-      if (g.frightened>0) g.frightened -= dt;
-      // na skrzyżowaniach wybór kierunku
-      const centered = alignIfPossible(s, g);
-      const speedG = (g.frightened>0?5:6) * dt;
-      if (centered){
-        const dirs = [ {x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1} ].filter(d=> !(d.x===-g.dir.x && d.y===-g.dir.y) );
-        const options = dirs.filter(d=> !isWall(Math.round(g.x-0.5)+d.x, Math.round(g.y-0.5)+d.y) );
-        if (options.length){
-          // prosty "AI": gdy nie przestraszony – wybieraj kierunek przybliżający do pac, inaczej losowy od pac
-          if (g.frightened<=0){
-            options.sort((a,b)=>{
-              const ax = (g.x+a.x) - p.x, ay=(g.y+a.y)-p.y;
-              const bx = (g.x+b.x) - p.x, by=(g.y+b.y)-p.y;
-              return (Math.abs(ax)+Math.abs(ay)) - (Math.abs(bx)+Math.abs(by));
-            });
-            g.dir = options[0];
-          } else {
-            options.sort((a,b)=>{
-              const ax = (g.x+a.x) - p.x, ay=(g.y+a.y)-p.y;
-              const bx = (g.x+b.x) - p.x, by=(g.y+b.y)-p.y;
-              return (Math.abs(bx)+Math.abs(by)) - (Math.abs(ax)+Math.abs(ay));
-            });
-            g.dir = options[0];
-          }
-        }
-      }
-      // ruch
-      const tgx = Math.round(g.x-0.5)+g.dir.x, tgy=Math.round(g.y-0.5)+g.dir.y;
-      if (!isWall(tgx,tgy)) { g.x += g.dir.x*speedG; g.y += g.dir.y*speedG; }
-    });
-
-    // Kolizje pac‑ghost
-    for (const g of s.ghosts){
-      const dx = (g.x - p.x), dy=(g.y - p.y);
-      if (dx*dx+dy*dy < 0.18){
-        if (g.frightened>0){
-          setScore(sc=>sc+200);
-          // odśwież ducha do domku
-          const sg = startGhosts[0]; g.x=sg.x+0.5; g.y=sg.y+0.5; g.dir={x:0,y:-1}; g.frightened=0;
-        } else {
-          // strata życia
-          setLives(v=>{
-            const nv = v-1; if (nv<=0){
-              // reset gry
-              s.dots.clear();
-              for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if (MAP[y][x]==='.'||MAP[y][x]==='o') s.dots.add(`${x},${y}`);
-              setScore(0); setLevel(1); setLives(3);
-            }
-            return Math.max(0,nv);
-          });
-          p.x=startPac.x+0.5; p.y=startPac.y+0.5; p.dir={x:1,y:0}; p.next=p.dir;
-          s.ghosts.forEach((g,i)=>{ g.x=startGhosts[i%startGhosts.length].x+0.5; g.y=startGhosts[i%startGhosts.length].y+0.5; g.dir={x:0,y:-1}; g.frightened=0; });
-          break;
-        }
-      }
-    }
-  }
-
-  function render(ctx, s){
-    // dopasuj canvas do wrappera (retina‑safe)
-    const wrap = wrapRef.current; if (!wrap) return;
-    const scale = Math.min((wrap.clientWidth-16)/W, (wrap.clientHeight-120)/H, 1.6);
-    const cw = Math.floor(W*scale), ch = Math.floor(H*scale);
-    if (canvasRef.current.width !== cw || canvasRef.current.height!==ch){ canvasRef.current.width=cw; canvasRef.current.height=ch; }
-    ctx.clearRect(0,0,cw,ch);
-
-    ctx.save();
-    ctx.scale(scale, scale);
-    // tło
-    ctx.fillStyle = "#0b1220"; ctx.fillRect(0,0,W,H);
-
-    // rysuj mapę
-    for(let y=0;y<ROWS;y++){
-      for(let x=0;x<COLS;x++){
-        const c = MAP[y][x];
-        if (c==='#'){
-          ctx.fillStyle = "#1f2937"; // ściana
-          ctx.fillRect(x*TILE, y*TILE, TILE, TILE);
-          ctx.strokeStyle = "#374151";
-          ctx.strokeRect(x*TILE+0.5, y*TILE+0.5, TILE-1, TILE-1);
-        }
-        const k = `${x},${y}`;
-        if (s.dots.has(k)){
-          ctx.fillStyle = (c==='o')?"#fde047":"#9ca3af";
-          ctx.beginPath();
-          ctx.arc(x*TILE+TILE/2, y*TILE+TILE/2, (c==='o')?4:2.5, 0, Math.PI*2);
-          ctx.fill();
-        }
-      }
-    }
-
-    // Pac
-    const p = s.pac;
-    ctx.fillStyle = "#facc15";
-    ctx.beginPath();
-    ctx.arc(p.x*TILE, p.y*TILE, TILE*0.38, 0, Math.PI*2);
-    ctx.fill();
-
-    // Ghosts
-    s.ghosts.forEach(g=>{
-      ctx.fillStyle = g.frightened>0?"#60a5fa":g.color;
-      ctx.beginPath();
-      ctx.arc(g.x*TILE, g.y*TILE, TILE*0.36, 0, Math.PI*2);
-      ctx.fill();
-    });
-
-    ctx.restore();
-  }
-
-  return (
-    <div ref={wrapRef} className="w-full h-full flex flex-col">
-      <div className="flex items-center justify-between p-3 border-b border-gray-800">
-        <div className="flex items-center gap-3 text-sm">
-          <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">Score: <b>{score}</b></span>
-          <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">Lives: <b>{lives}</b></span>
-          <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700">Level: <b>{level}</b></span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={()=>setRunning(r=>!r)} className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-sm">{running?"Pauza":"Wznów"}</button>
-          <button onClick={onClose} className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-sm">Zamknij</button>
-        </div>
-      </div>
-      <div className="flex-1 grid place-items-center p-2">
-        <canvas ref={canvasRef} className="max-w-full max-h-full"/>
-      </div>
-
-      {/* Sterowanie mobilne */}
-      <div className="md:hidden p-3 grid grid-cols-3 gap-2 place-items-center">
-        <div />
-        <button onClick={()=>{ const s=stateRef.current; s && (s.pac.next={x:0,y:-1}); }} className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800">↑</button>
-        <div />
-        <button onClick={()=>{ const s=stateRef.current; s && (s.pac.next={x:-1,y:0}); }} className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800">←</button>
-        <div />
-        <button onClick={()=>{ const s=stateRef.current; s && (s.pac.next={x:1,y:0}); }} className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800">→</button>
-        <div />
-        <button onClick={()=>{ const s=stateRef.current; s && (s.pac.next={x:0,y:1}); }} className="px-4 py-3 rounded-lg border border-gray-700 bg-gray-800">↓</button>
-        <div />
-      </div>
-    </div>
-  );
-}
-
-function GameModal({ open, onClose }){
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-[100] bg-black/70 grid place-items-center p-3" onClick={onClose}>
-      <div className="w-full max-w-3xl h-[70vh] md:h-[80vh] rounded-xl border border-gray-700 bg-gray-900 overflow-hidden shadow-2xl" onClick={(e)=>e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-gray-800 flex items-center gap-2 text-white"><Gamepad2 size={18}/> <b>Pac‑BOX (mini)</b></div>
-        <PacBoxGame onClose={onClose} />
-      </div>
-    </div>
-  );
-}
-
-function GameDrawer({ open, onClose, onOpenGame }){
-  return (
-    <div className={`fixed right-3 bottom-24 z-40 transition-transform ${open?"translate-x-0":"translate-x-[calc(100%+16px)]"}`}>
-      <div className="w-64 rounded-xl border border-gray-700 bg-gray-900 shadow-xl">
-        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-          <div className="flex items-center gap-2"><Gamepad2 size={16}/> <span className="font-semibold">Gry</span></div>
-          <button onClick={onClose} className="px-2 py-1 rounded-md bg-gray-800 border border-gray-700 hover:bg-gray-700"><X size={14}/></button>
-        </div>
-        <div className="p-3 space-y-2">
-          <div className="rounded-lg border border-gray-700 p-3 bg-gray-800">
-            <div className="font-medium">Pac‑BOX (mini)</div>
-            <div className="text-xs text-gray-400 mb-2">Klasyk w wersji przeglądarkowej. Strzałki lub przyciski ekranowe.</div>
-            <button onClick={onOpenGame} className="w-full px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700">Uruchom</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function App(){
   const { supabase, user } = useSupabase();
   const [guestStore, setGuestStore] = useGuestStore();
@@ -580,6 +256,7 @@ export default function App(){
 
   // Kolejka
   const [queue, setQueue] = useState([]);
+  the_queue_fix: // (label to avoid accidental edits)
   const [queueIndex, setQueueIndex] = useState(0);
   const [autoNext, setAutoNext] = useState(true);
   const [queueLabel, setQueueLabel] = useState("");
@@ -590,8 +267,7 @@ export default function App(){
   const [lastQuery, setLastQuery] = useState("");
   const sentinelRef = useRef(null);
 
-  // Gry
-  const [showDrawer, setShowDrawer] = useState(false);
+  // Gra (modal)
   const [showGame, setShowGame] = useState(false);
 
   const isCloud = !!(supabase && user);
@@ -643,6 +319,7 @@ export default function App(){
     finally{ setLoading(false); }
   }
 
+  // Auto‑doładowanie przy przewinięciu do dołu
   useEffect(() => {
     if (!sentinelRef.current) return;
     const el = sentinelRef.current;
@@ -807,7 +484,7 @@ export default function App(){
           </section>
         </aside>
 
-        {/* Right: player + results */}
+        {/* Prawa kolumna: player + wyniki */}
         <section className="col-span-12 lg:col-span-8 flex flex-col gap-4">
           <div className="space-y-3">
             <Player videoId={active?.video_id} onEnded={onEnded} userInteracted={userInteracted} onRequireInteract={()=>setUserInteracted(true)} />
@@ -828,7 +505,7 @@ export default function App(){
                 <button onClick={()=> startQueue(playlistItems, "Playlista") } className="text-sm px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 inline-flex items-center gap-2"><Play size={14}/> Odtwórz playlistę</button>
               </div>
 
-              {/* Mobile: prosta lista bez miniaturek */}
+              {/* Mobile: lista */}
               <div className="md:hidden divide-y divide-gray-800 border border-gray-800 rounded-lg overflow-hidden">
                 {playlistItems.length===0 ? (
                   <div className="p-4 text-sm text-gray-400 flex items-center gap-2"><ListVideo size={16}/> Ta playlista jest pusta.</div>
@@ -886,12 +563,23 @@ export default function App(){
         </section>
       </main>
 
-      {/* Wysuwany panel GRY */}
-      <button onClick={()=>setShowDrawer(true)} className="fixed right-3 bottom-3 z-30 inline-flex items-center gap-2 px-3 py-2 rounded-full bg-red-600 hover:bg-red-700 shadow-lg">
-        <Gamepad2 size={18}/> Gry
+      {/* FAB: uruchom grę */}
+      <button onClick={()=>setShowGame(true)} className="fixed right-3 bottom-3 z-30 inline-flex items-center gap-2 px-3 py-2 rounded-full bg-red-600 hover:bg-red-700 shadow-lg">
+        <Gamepad2 size={18}/> Gra
       </button>
-      <GameDrawer open={showDrawer} onClose={()=>setShowDrawer(false)} onOpenGame={()=>{ setShowDrawer(false); setShowGame(true); }} />
-      <GameModal open={showGame} onClose={()=>setShowGame(false)} />
+
+      {/* Modal gry */}
+      {showGame && (
+        <div className="fixed inset-0 z-[100] bg-black/70 grid place-items-center p-3" onClick={()=>setShowGame(false)}>
+          <div className="w-full max-w-3xl h-[70vh] md:h-[80vh] rounded-xl border border-gray-700 bg-gray-900 overflow-hidden shadow-2xl" onClick={(e)=>e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-2"><Gamepad2 size={18}/> <b>Pac‑BOX</b></div>
+              <button className="px-3 py-1.5 rounded-md bg-gray-800 border border-gray-700 hover:bg-gray-700" onClick={()=>setShowGame(false)}>Zamknij</button>
+            </div>
+            <PacBoxGame onClose={()=>setShowGame(false)} />
+          </div>
+        </div>
+      )}
 
       {/* Account modal */}
       {showAccount && (
@@ -948,55 +636,3 @@ function AuthPanel({ supabase, authView, setAuthView }){
     </div>
   );
 }
-
-// ===============================================================
-// FILE: netlify/functions/youtube-search.js  (ESM, "type":"module")
-// Paginacja: obsługa pageToken i nextPageToken
-// ===============================================================
-export const handler = async (event) => {
-  const YT_API_KEY = process.env.YT_API_KEY;
-  const params = new URLSearchParams(event.queryStringParameters || {});
-  const q = (params.get("q") || "").trim();
-  const pageToken = params.get("pageToken") || "";
-
-  const json = (code, data) => ({
-    statusCode: code,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    body: JSON.stringify(data),
-  });
-
-  if (!YT_API_KEY) return json(500, { error: "Missing YT_API_KEY" });
-  if (!q) return json(200, { items: [], nextPageToken: null });
-
-  const url = new URL("https://www.googleapis.com/youtube/v3/search");
-  url.searchParams.set("part", "snippet");
-  url.searchParams.set("type", "video");
-  url.searchParams.set("maxResults", "24");
-  url.searchParams.set("q", q);
-  if (pageToken) url.searchParams.set("pageToken", pageToken);
-  url.searchParams.set("key", YT_API_KEY);
-
-  try {
-    const resp = await fetch(url.toString());
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error("YouTube API error", resp.status, text);
-      return json(resp.status, { error: "YouTube API error", status: resp.status, details: safeParse(text) });
-    }
-    const data = await resp.json();
-    const items = (data.items || []).map((it) => ({
-      video_id: it.id?.videoId,
-      title: it.snippet?.title,
-      channel_title: it.snippet?.channelTitle,
-      thumbnail_url: it.snippet?.thumbnails?.medium?.url || it.snippet?.thumbnails?.high?.url,
-      publishedAt: it.snippet?.publishedAt,
-    })).filter(v => v.video_id);
-
-    return json(200, { items, nextPageToken: data.nextPageToken || null });
-  } catch (e) {
-    console.error("Fetch failed", e);
-    return json(500, { error: "Fetch failed" });
-  }
-};
-
-function safeParse(text){ try { return JSON.parse(text); } catch { return { raw: text }; } }
